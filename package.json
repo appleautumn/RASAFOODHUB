@@ -1,0 +1,16 @@
+{
+  "name": "rasa-crm-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute rasa-crm --remote --file=./schema.sql",
+    "db:seed": "wrangler d1 execute rasa-crm --remote --file=./seed.users.sql",
+    "db:list": "wrangler d1 execute rasa-crm --remote --command=\"SELECT email, name, role FROM users ORDER BY role, email\"",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

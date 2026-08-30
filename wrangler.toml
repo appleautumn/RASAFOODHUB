@@ -1,0 +1,32 @@
+name = "rasa-crm"
+main = "src/index.js"
+compatibility_date = "2025-08-01"
+
+# ⚠️ 一定要关掉 workers.dev。
+# Access 只保护走 Cloudflare 代理的自订网域；*.workers.dev 绕得过去，
+# 留着等于在保护后面开了一扇没锁的后门。
+workers_dev = false
+
+# 你的 CRM 网址（换成自己的）
+routes = [
+  { pattern = "crm.rasafoodhub.com", custom_domain = true }
+]
+
+[vars]
+# Zero Trust > Settings > Custom Pages 看得到，长得像 rasafoodhub.cloudflareaccess.com
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+# Access > Applications > 你的 app > Overview 里的 Application Audience (AUD) Tag
+ACCESS_AUD = "把 AUD tag 贴在这里"
+# "true" = email 不在 users 表里就直接挡掉；"false" = 当作 staff 放行
+REQUIRE_USER_ROW = "false"
+
+# 前端静态档（build 出来的 CRM）
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# users 表放这里。database_id 用 `wrangler d1 create rasa-crm` 之后贴回来。
+[[d1_databases]]
+binding = "DB"
+database_name = "rasa-crm"
+database_id = "执行 wrangler d1 create 之后把 id 贴这里"
