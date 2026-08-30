@@ -69,9 +69,16 @@ Access 会带两个东西进来：
 前端右上角的角色标签是唯读的。以前那个可以自己切 admin/staff 的下拉选单已经拿掉了 ——
 角色能自己选就不算权限。
 
-`users` 表里查不到的 email 预设当 `staff`（看不到团队活动）。
-想更严格，把 `wrangler.toml` 的 `REQUIRE_USER_ROW` 设成 `"true"`，
-不在表里的人就直接挡掉。
+目前 `users` 表里只有一个人：
+
+| email | name | role |
+|---|---|---|
+| `rasafoodhubplt@gmail.com` | Rasa Admin | admin |
+
+内容在 `seed.users.sql`，改完跑 `npm run db:seed`。
+
+`wrangler.toml` 的 `REQUIRE_USER_ROW` 设成 `"true"`：不在 `users` 表里的 email
+一律挡掉。设成 `"false"` 则改成「查不到就当 staff 放行」。
 
 ## 前端要接上去的地方
 

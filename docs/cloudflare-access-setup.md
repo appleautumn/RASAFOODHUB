@@ -54,6 +54,9 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
 3. 里面本来就会有一个 **One-time PIN** —— 这就是 Email OTP，Cloudflare 内建，不用设定、不用申请
 4. 如果清单里还有 Google、GitHub 之类的，先不用管，第 3 步会指定只用 One-time PIN
 
+> 「寄验证码到 email」就是这一项，Cloudflare 自己寄、自己验，
+> 不用申请、不用接 SMTP、不用买寄信服务，我们也不写任何程式。
+
 > ✅ **成功的样子**：Login methods 清单里看得到 **One-time PIN**（它无法被删除，一定存在）。
 
 ---
@@ -93,8 +96,9 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
 2. **Action**：选 **Allow**
 3. **Configure rules** → **Include** 区块：
    - **Selector**：下拉选 **Emails**
-   - **Value**：输入第一个 email，按 Enter；再输入下一个，再按 Enter
-     （例如 `rasafoodhubplt@gmail.com`、`staff@example.com`）
+   - **Value**：输入 `rasafoodhubplt@gmail.com`，**按 Enter**
+     （一定要按 Enter，看到它变成一个小方块才算加进去）
+   - 目前就你一个人，这样就好；以后要加同事再回来这里加
 4. 按 **Next / Save**
 
 > 💡 如果整间公司都用同一个网域的信箱，Selector 可以改选
@@ -112,7 +116,7 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
 1. 开一个**无痕视窗**（Chrome：`Ctrl/Cmd + Shift + N`）
 2. 打开 `https://crm.rasafoodhub.com`
 3. 应该看到 **Cloudflare Access 的登入页**：一个 email 输入框 + **Send me a code** 按钮
-4. 输入你在 Policy 里允许的 email → 按 **Send me a code**
+4. 输入 `rasafoodhubplt@gmail.com` → 按 **Send me a code**
 5. 画面变成「输入验证码」；同时你的信箱会收到一封信，
    寄件人是 `noreply@notify.cloudflare.com`，里面有 6 位数字
    （**没收到就翻垃圾邮件匣**，Gmail 常丢进去）
@@ -159,7 +163,7 @@ curl -sSI https://crm.rasafoodhub.com/api/authcheck | head -5
 [vars]
 ACCESS_TEAM_DOMAIN = "rasafoodhub.cloudflareaccess.com"   # 第 1 步抄的
 ACCESS_AUD = "第 3 步复制的那串 AUD tag"
-REQUIRE_USER_ROW = "false"
+REQUIRE_USER_ROW = "true"
 ```
 
 同时确认 `routes` 里的网域是你自己的，而且 `workers_dev = false`。
@@ -175,11 +179,17 @@ npx wrangler d1 create rasa-crm
 3. 建表 + 填人：
 
 ```bash
-npm run db:init                          # 建 users 表
-cp seed.users.example.sql seed.users.sql # 改成你自己的 email 与角色
-npm run db:seed
-npm run db:list                          # 看一眼有没有写进去
+npm run db:init   # 建 users 表
+npm run db:seed   # 写入 rasafoodhubplt@gmail.com = admin（内容在 seed.users.sql）
+npm run db:list   # 看一眼有没有写进去
 ```
+
+> ✅ **成功的样子**：`db:list` 印出一行
+> `rasafoodhubplt@gmail.com | Rasa Admin | admin`。
+>
+> ⚠️ `REQUIRE_USER_ROW` 目前设成 `"true"`，也就是「不在 users 表里的人一律挡掉」。
+> 所以这三行**一定要在 `wrangler deploy` 之前跑完**，否则连你自己都会被挡在外面
+> （真的挡到了也不用慌：打开 `/api/authcheck` 会写 `user_not_in_table`，补跑 `db:seed` 就好）。
 
 4. 部署：
 
@@ -218,7 +228,7 @@ npx wrangler deploy
 
 1. Zero Trust → Access → Applications → `Rasa CRM` → Policies → `allow-team`
    → 在 Emails 里加上他的 email → Save
-2. 加进 users 表决定他的角色：
+2. 加进 users 表决定他的角色（`REQUIRE_USER_ROW = "true"` 时这步不做他进不来）：
 
 ```bash
 npx wrangler d1 execute rasa-crm --remote \

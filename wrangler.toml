@@ -17,8 +17,9 @@ routes = [
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
 # Access > Applications > 你的 app > Overview 里的 Application Audience (AUD) Tag
 ACCESS_AUD = "把 AUD tag 贴在这里"
-# "true" = email 不在 users 表里就直接挡掉；"false" = 当作 staff 放行
-REQUIRE_USER_ROW = "false"
+# "true" = email 不在 users 表里就直接挡掉（目前只有一个人，用 true 比较紧）
+# "false" = 查不到就当 staff 放行
+REQUIRE_USER_ROW = "true"
 
 # 前端静态档（build 出来的 CRM）
 [assets]
