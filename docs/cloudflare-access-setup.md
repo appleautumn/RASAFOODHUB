@@ -5,6 +5,30 @@
 
 全部做完大概 20 分钟。照顺序做，每一步都有「看到什么代表成功」。
 
+> ### 想少点几下？用脚本
+>
+> 第 1～4 步（team domain、Application、Policy、One-time PIN、抓 AUD 填进 `wrangler.toml`）
+> 可以让脚本一次做完，你只要生一个 API token：
+>
+> 1. 开 <https://dash.cloudflare.com/profile/api-tokens> → **Create Token**
+>    → **Create Custom Token** → **Get started**
+> 2. Permissions 加三行，TTL 设到明天，建立后复制那串：
+>    - Account → **Access: Apps and Policies** → Edit
+>    - Account → **Access: Organizations, Identity Providers, and Groups** → Edit
+>    - Account → **Account Settings** → Read
+> 3. 执行（换成你的网址）：
+>
+> ```bash
+> CLOUDFLARE_API_TOKEN=贴在这里 npm run access:setup -- \
+>   --hostname crm.rasafoodhub.com \
+>   --email rasafoodhubplt@gmail.com \
+>   --team rasafoodhub
+> ```
+>
+> 重复执行是安全的，不会建出第二份。跑完直接跳到**第 5 步**测试。
+> 若它说 Zero Trust 还没开通，就先做第 1 步再重跑。
+> 最后记得回 API Tokens 页面把 token **Revoke** 掉。
+
 ---
 
 ## 第 0 步：先确认前置条件（很重要，跳过后面会卡住）

@@ -20,6 +20,7 @@ worker 只做一件事：**验证 Access 发的 JWT**，再从 `users` 表查这
 | `schema.sql` | `users` 表（email / name / role） |
 | `app/rasacrm.jsx` | CRM 前端，身分与角色改成向 `/api/me` 拿 |
 | `test/access-jwt.test.mjs` | 20 个验证测试，含伪造 token 的情境 |
+| `scripts/setup-access.mjs` | 用 API token 一次建好 Access 的 Application、Policy、登入方式 |
 
 ```bash
 npm test        # 跑验证逻辑的测试（不需要网路、不需要 Cloudflare 帐号）
