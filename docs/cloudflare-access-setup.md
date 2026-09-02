@@ -207,7 +207,7 @@ npx wrangler d1 create rasa-crm
 3. 建表 + 填人：
 
 ```bash
-npm run db:init   # 建 users 表与 app_state 表
+npm run db:init   # 建 users 表与 CRM 的资料表（见 schema.sql）
 npm run db:seed   # 写入 rasafoodhubplt@gmail.com = admin（内容在 seed.users.sql）
 npm run db:list   # 看一眼有没有写进去
 ```

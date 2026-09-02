@@ -1,5 +1,9 @@
 # Rasa CRM × Cloudflare Access — 进度快照
 
+> ⚠️ 这是**阶段一之前**的快照，留着当纪录。
+> 阶段零（资料层换成关联式）之后的最新进度看 [`PROGRESS.md`](./PROGRESS.md)。
+> 底下端点表里的 `/api/storage/:key` 已经不存在了，换成资源导向的 REST（见 README）。
+
 > 2026-09-02 · 分支 `claude/cloudflare-access-setup-hh1wml` · 8 个 commit 已推送
 > 测试 **47 项全过**（`npm test`，不需要网路与 Cloudflare 帐号）
 
@@ -43,13 +47,13 @@ npx wrangler d1 execute rasa-crm --remote \
 |---|---|---|
 | `/api/authcheck` | 否（永远 200） | 验证过程诊断，设定填错时看这个 |
 | `/api/me` | 是 | `{ email, name, role, isActive, isAdmin }` |
-| `/api/storage/:key` | 是 | CRM 资料读写，存 D1，记录 `updated_by` |
+| ~~`/api/storage/:key`~~ | — | 阶段零已移除，换成 `/api/customers` 等资源端点 |
 | `/api/admin/*` | 是，且 admin | 预留给之后只有 admin 能看的资料 |
 | 其它 | 是 | CRM 本体 |
 
 ### 前端与建置
 
-- `window.storage` 改打 `/api/storage/*` —— 原本那是 Claude Artifact 的 API，一般浏览器没有
+- `window.storage` 换成打 worker 的 API —— 原本那是 Claude Artifact 的 API，一般浏览器没有
 - 资料从「每人浏览器各一份」变成**全团队共用一份**
 - esbuild 打包 + Tailwind 在 build 时产 CSS（不依赖 `cdn.tailwindcss.com`）
 - 身分与角色开场向 `/api/me` 拿，拿不到就不画出系统

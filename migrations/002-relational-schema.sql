@@ -1,29 +1,18 @@
--- Rasa CRM 资料库结构。
+-- 把已经建好的资料库（只有 users + app_state）升级到关联式结构。
+-- 全新的资料库不用跑这个 —— schema.sql 里已经有了。
 --
--- 原本 CRM 的资料整包塞在 app_state 一个栏位里（key-value blob）。那个形状有两个问题：
---   1. 整包读→改→整包写 = 最后写入者全覆盖。两个人同时开着系统改不同顾客，
---      后存的会把前一个的改动整个盖掉，而且不会报错。
---   2. 筛选、排序、背景排程、群发名单全都查不了，只能整包捞到前端算。
--- 这个档案把它拆成正常的关联式资料表。app_state 的迁移见 scripts/import-data.mjs。
+--   npx wrangler d1 execute rasa-crm --local  --file=./migrations/002-relational-schema.sql
+--   npx wrangler d1 execute rasa-crm --remote --file=./migrations/002-relational-schema.sql
 --
---   npm run db:init          # 线上
---   npm run db:init:local    # 本机
-
-/* ------------------------------- users ------------------------------- */
-
--- 两层授权的第二层。
--- Cloudflare Access 决定「能不能进门」；这张表决定「进来算不算数、能做什么」。
--- 通过 Access 但不在这张表里、或 is_active = 0 的人，worker 一样挡下来。
-CREATE TABLE IF NOT EXISTS users (
-  email      TEXT PRIMARY KEY,
-  name       TEXT NOT NULL DEFAULT '',
-  role       TEXT NOT NULL DEFAULT 'staff' CHECK (role IN ('admin', 'staff')),
-  -- 停权开关。设 0 之后就算 Access 放他进门，worker 一样挡下来。
-  is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- email 一律存小写，worker 查询前也会转小写，两边才对得上
-  CHECK (email = lower(email))
-);
+-- 这个档案只「加」东西，不删任何资料：app_state 原封不动留着，
+-- 让你可以先把旧 blob 汇出来（见下面）灌进新表，确认没问题之后再自己决定要不要丢。
+--
+-- 搬旧资料的步骤：
+--   1. npx wrangler d1 execute rasa-crm --local --json \
+--        --command="SELECT key, value FROM app_state" > app_state.json
+--   2. node scripts/import-data.mjs app_state.json
+--   3. npx wrangler d1 execute rasa-crm --local --file=./import.sql
+--   4. 全部确认无误之后（不急，可以放几天）：DROP TABLE app_state;
 
 /* ----------------------------- customers ----------------------------- */
 

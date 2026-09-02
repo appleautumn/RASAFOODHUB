@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
 import { clearJwksCache } from "../src/access-jwt.js";
+import { createTestDb, seedUsers } from "./helpers/d1.mjs";
 
 const TEAM = "rasafoodhub.cloudflareaccess.com";
 const AUD = "test-aud-tag";
@@ -119,7 +120,7 @@ test("只带纯文字 email 标头（伪造）-> 挡掉", async () => {
 });
 
 test("没登入也读不到 CRM 资料", async () => {
-  const res = await worker.fetch(req("/api/storage/rasa-crm:main"), baseEnv(fakeDb({ users })));
+  const res = await worker.fetch(req("/api/customers"), baseEnv(fakeDb({ users })));
   assert.equal(res.status, 401);
 });
 
@@ -150,46 +151,60 @@ test("登入后拿得到 CRM 页面", async () => {
 test("/api/admin/* 只有 admin 进得去", async () => {
   const env = baseEnv(fakeDb({ users }));
   assert.equal((await worker.fetch(await authed("/api/admin/anything", STAFF), env)).status, 403);
-  // admin 会穿过这道检查，往下走到静态资源
-  assert.equal((await worker.fetch(await authed("/api/admin/anything", ADMIN), env)).status, 200);
+  // admin 穿得过这道角色检查。底下还没有这条 admin 端点，所以是 404 ——
+  // 重点是「不是 403」：他没有被角色挡下来。
+  const asAdmin = await worker.fetch(await authed("/api/admin/anything", ADMIN), env);
+  assert.notEqual(asAdmin.status, 403);
+  assert.equal(asAdmin.status, 404);
 });
 
 /* --------------------------- 资料存取 --------------------------- */
 
+/** 真的 SQLite + 真的验证：整条路径一起验，不是只验路由 */
+function realEnv() {
+  const db = createTestDb();
+  seedUsers(db, users);
+  return baseEnv(db);
+}
+
 test("存进去再读出来，而且记得是谁改的", async () => {
-  const env = baseEnv(fakeDb({ users }));
-  const put = await worker.fetch(
-    await authed("/api/storage/rasa-crm:main", ADMIN, {
-      method: "PUT",
-      body: JSON.stringify({ value: '{"customers":[]}' }),
+  const env = realEnv();
+  const post = await worker.fetch(
+    await authed("/api/customers", ADMIN, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        customer: { id: "c1", name: "Nurul", stage: "new", updatedAt: "2026-09-01T00:00:00.000Z" },
+      }),
     }),
     env
   );
-  assert.equal(put.status, 200);
+  assert.equal(post.status, 201);
 
-  const get = await worker.fetch(await authed("/api/storage/rasa-crm:main", ADMIN), env);
+  const get = await worker.fetch(await authed("/api/customers/c1", ADMIN), env);
   const body = await get.json();
-  assert.equal(body.value, '{"customers":[]}');
-  assert.equal(body.updatedBy, ADMIN);
+  assert.equal(body.customer.name, "Nurul");
+  assert.equal(body.customer.updatedBy, ADMIN);
 });
 
-test("没存过的 key 回 404（前端当成「第一次使用」）", async () => {
-  const res = await worker.fetch(await authed("/api/storage/rasa-crm:log", ADMIN), baseEnv(fakeDb({ users })));
+test("没存过的设定回 404（前端当成「第一次使用」）", async () => {
+  const res = await worker.fetch(await authed("/api/settings/apps.ai", ADMIN), realEnv());
   assert.equal(res.status, 404);
 });
 
-test("乱七八糟的 key 会被挡", async () => {
-  const res = await worker.fetch(await authed("/api/storage/..%2Fetc%2Fpasswd", ADMIN), baseEnv(fakeDb({ users })));
+test("乱七八糟的 id 会被挡", async () => {
+  const res = await worker.fetch(await authed("/api/customers/..%2Fetc%2Fpasswd", ADMIN), realEnv());
   assert.equal(res.status, 400);
 });
 
-test("超过 1 MiB 的资料会被挡", async () => {
+test("超大的请求内容会被挡，而不是让 D1 报怪错", async () => {
   const res = await worker.fetch(
-    await authed("/api/storage/rasa-crm:main", ADMIN, {
+    await authed("/api/settings/apps.ai", ADMIN, {
       method: "PUT",
-      body: JSON.stringify({ value: "x".repeat(1024 * 1024 + 1) }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value: "x".repeat(4 * 1024 * 1024 + 1) }),
     }),
-    baseEnv(fakeDb({ users }))
+    realEnv()
   );
   assert.equal(res.status, 413);
 });
@@ -244,7 +259,7 @@ test("停权的人连首页都拿不到", async () => {
 
 test("停权的人读不到 CRM 资料", async () => {
   const res = await worker.fetch(
-    await authed("/api/storage/rasa-crm:main", SUSPENDED),
+    await authed("/api/customers", SUSPENDED),
     baseEnv(fakeDb({ users }))
   );
   assert.equal(res.status, 401);

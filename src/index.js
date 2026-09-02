@@ -1,17 +1,8 @@
 import { verifyAccessJwt, readAccessToken, issuerFor, certsUrlFor, normalizeTeamDomain } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
+import { handleApi, json } from "./api.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
-}
 
 function deniedPage(title, message) {
   const html = `<!doctype html><meta charset="utf-8">
@@ -187,65 +178,6 @@ const HINTS = {
 
 /* ------------------------------ 路由 ------------------------------ */
 
-/* ---------------------------- 资料存取 ---------------------------- */
-
-const MAX_VALUE_BYTES = 1024 * 1024; // 1 MiB，超过就挡下来而不是让 D1 报怪错
-const VALID_KEY = /^[A-Za-z0-9:_\-.]{1,128}$/;
-
-/**
- * 取代原本 Claude Artifact 环境的 window.storage。
- * 资料是全团队共用的一份，所以每个请求都必须先通过 Access 验证（呼叫端已确保）。
- */
-async function handleStorage(request, env, url, user) {
-  if (!env.DB) return json({ ok: false, error: "db_not_bound" }, 500);
-
-  const key = decodeURIComponent(url.pathname.slice("/api/storage/".length));
-  if (!VALID_KEY.test(key)) return json({ ok: false, error: "bad_key" }, 400);
-
-  if (request.method === "GET") {
-    const row = await env.DB.prepare(
-      "SELECT key, value, updated_at, updated_by FROM app_state WHERE key = ?1"
-    )
-      .bind(key)
-      .first();
-    if (!row) return json({ ok: false, error: "not_found" }, 404);
-    return json({ key: row.key, value: row.value, updatedAt: row.updated_at, updatedBy: row.updated_by });
-  }
-
-  if (request.method === "PUT") {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ ok: false, error: "bad_json" }, 400);
-    }
-    const value = typeof body?.value === "string" ? body.value : null;
-    if (value === null) return json({ ok: false, error: "value_must_be_string" }, 400);
-    if (new TextEncoder().encode(value).length > MAX_VALUE_BYTES) {
-      return json({ ok: false, error: "too_large", detail: "单一 key 上限 1 MiB" }, 413);
-    }
-
-    await env.DB.prepare(
-      `INSERT INTO app_state (key, value, updated_at, updated_by)
-       VALUES (?1, ?2, datetime('now'), ?3)
-       ON CONFLICT(key) DO UPDATE SET
-         value = excluded.value,
-         updated_at = excluded.updated_at,
-         updated_by = excluded.updated_by`
-    )
-      .bind(key, value, user.email)
-      .run();
-    return json({ ok: true, key });
-  }
-
-  if (request.method === "DELETE") {
-    await env.DB.prepare("DELETE FROM app_state WHERE key = ?1").bind(key).run();
-    return json({ ok: true, key });
-  }
-
-  return json({ ok: false, error: "method_not_allowed" }, 405);
-}
-
 async function serveApp(request, env) {
   if (env.ASSETS) return env.ASSETS.fetch(request);
   // 还没接上前端静态档时的占位回应
@@ -280,16 +212,17 @@ export default {
       return json({ ok: true, user: { ...user, isAdmin: user.role === "admin" } });
     }
 
-    // CRM 的资料读写（前端的 window.storage 打这里）
-    if (url.pathname.startsWith("/api/storage/")) {
-      return handleStorage(request, env, url, user);
-    }
-
     // 之后要放只有 admin 能读的资料，挂在这个前缀底下就自动受保护
     if (url.pathname.startsWith("/api/admin/")) {
       if (user.role !== "admin") {
         return json({ ok: false, error: "forbidden", detail: "需要 admin 角色" }, 403);
       }
+    }
+
+    // CRM 的资料读写。资源导向的 REST，筛选与排序在 SQL 里做，
+    // 更新只写有改到的栏位并带乐观锁 —— 前端的 window.storage 转接层打这里。
+    if (url.pathname.startsWith("/api/")) {
+      return handleApi(request, env, url, user);
     }
 
     return serveApp(request, env);
