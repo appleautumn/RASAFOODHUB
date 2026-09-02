@@ -1,6 +1,7 @@
 name = "rasa-crm"
 main = "src/index.js"
 compatibility_date = "2025-08-01"
+account_id = "4dfc7873de4b3a2e6203fce342215cdd"
 
 # 打包时压缩。除了体积，也让 [define] 里那个常数的 false 分支被真的剥掉，
 # 而不是留成一段永远到不了的死码。
@@ -49,4 +50,4 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "rasa-crm"
-database_id = "6e719769-d25b-40dc-b5b5-66d8773b54cf"
+database_id = "234e801c-0ec6-4b7c-be09-2ef5c78b7aae"

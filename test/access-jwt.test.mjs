@@ -180,3 +180,18 @@ test("没有标头时读 CF_Authorization cookie", () => {
   });
   assert.equal(readAccessToken(request), "from-cookie");
 });
+
+/* --------------------------- 设定值的判读 --------------------------- */
+
+test("AUD 还留着占位说明文字时，当作没设定", async () => {
+  for (const placeholder of ["把 AUD tag 贴在这里", "<your-aud>", "{{AUD}}", "   "]) {
+    const result = await verify(await makeToken(), { aud: placeholder });
+    assert.equal(result.reason, "config_missing_aud", `占位值未被挡下：${placeholder}`);
+  }
+});
+
+test("长得像真 AUD tag 的值会被接受", async () => {
+  const realish = "a".repeat(64);
+  const token = await makeToken({ claims: { aud: [realish] } });
+  assert.equal((await verify(token, { aud: realish })).ok, true);
+});

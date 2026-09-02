@@ -1,4 +1,11 @@
-import { verifyAccessJwt, readAccessToken, issuerFor, certsUrlFor, normalizeTeamDomain } from "./access-jwt.js";
+import {
+  verifyAccessJwt,
+  readAccessToken,
+  issuerFor,
+  certsUrlFor,
+  normalizeTeamDomain,
+  parseAudList,
+} from "./access-jwt.js";
 import { resolveUser } from "./users.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
@@ -93,8 +100,8 @@ async function handleAuthcheck(request, env) {
     teamDomain: teamDomain || null,
     issuer: teamDomain ? issuerFor(teamDomain) : null,
     certsUrl: teamDomain ? certsUrlFor(teamDomain) : null,
-    audConfigured: Boolean(aud),
-    audPrefix: aud ? `${aud.slice(0, 8)}…` : null,
+    audConfigured: parseAudList(aud).length > 0,
+    audPrefix: parseAudList(aud).length > 0 ? `${aud.slice(0, 8)}…` : null,
     d1Bound: Boolean(env.DB),
     requireUserRow: String(env.REQUIRE_USER_ROW || "false").toLowerCase() === "true",
     // 本机开发身分：两个都要成立才会生效

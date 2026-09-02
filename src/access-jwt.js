@@ -56,12 +56,18 @@ export function certsUrlFor(teamDomain) {
   return `${issuerFor(teamDomain)}/cdn-cgi/access/certs`;
 }
 
-/** 允许用逗号分隔填多个 AUD（例如同一份 code 跑 staging 与 production） */
-function parseAudList(raw) {
+/**
+ * 允许用逗号分隔填多个 AUD（例如同一份 code 跑 staging 与 production）。
+ *
+ * 真正的 AUD tag 是一串十六进位字元。设定档里还留着占位说明文字时
+ * （含空白或非 ASCII），当作没设定 —— 否则 /api/authcheck 会说
+ * 「已设定」，害人往错的方向找问题。
+ */
+export function parseAudList(raw) {
   return String(raw || "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter((s) => s && /^[\x21-\x7e]+$/.test(s) && !/^[<{].*[>}]$/.test(s));
 }
 
 /* ------------------------------ JWKS ------------------------------ */
