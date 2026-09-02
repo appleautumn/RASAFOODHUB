@@ -11,6 +11,11 @@ minify = true
 # <worker名>.<帐号子域>.workers.dev 的完整主机名即可，不需要 zone。
 workers_dev = true
 
+# 关掉 Preview URLs。它会额外给每个版本一个主机名
+# （<version>-rasa-crm.<子域>.workers.dev），那些主机名不会被你
+# 替正式网址建的 Access application 涵盖 —— 等于旁边多开几扇没锁的门。
+preview_urls = false
+
 # 之后买了自订网域，把上面改成 false，并打开这段：
 # routes = [
 #   { pattern = "crm.rasafoodhub.com", custom_domain = true }
@@ -44,4 +49,4 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "rasa-crm"
-database_id = "执行 wrangler d1 create 之后把 id 贴这里"
+database_id = "6e719769-d25b-40dc-b5b5-66d8773b54cf"
