@@ -70,18 +70,21 @@ npm run dev                                                    # 确认资料都
 
 ---
 
-## 第 3 步：网域（这步要花钱，绕不过去）
+## 第 3 步：（可选）网域
 
-Cloudflare Access **保护不了 `*.workers.dev`**。任何人都能直接打那个网址，
-JWT 标头也就无从验起。所以一定要有自己的网域。
+**不需要网域也能上线。** `wrangler.toml` 预设 `workers_dev = true`，
+部署后你会拿到 `rasa-crm.<你的帐号子域>.workers.dev`，
+Cloudflare Access 保护得到这个主机名 —— 建 self-hosted application 时
+hostname 那栏直接填它就行，不需要 zone。
 
-- **已经有网域** → 加进 Cloudflare（Dashboard → **Add a site**），把 DNS 转过来
-- **没有网域** → Cloudflare Dashboard 左边 **Domain Registration** → **Register Domain**，
-  一年大约 US$10 起。在 Cloudflare 买的好处是买完就直接在你帐号里，不用再搬 DNS
+想买网域是另一回事：好记、不绑在 workers.dev 子域名上、日后搬家不用改 URL。
+要买就在 Cloudflare Dashboard 左边 **Domain Registration** → **Register Domain**，
+一年约 US$10 起，买完直接在你帐号里。
 
-有网域之后，把 `wrangler.toml` 里的 `routes` 改成你的网址：
+买了之后把 `wrangler.toml` 改成：
 
 ```toml
+workers_dev = false
 routes = [
   { pattern = "crm.你的网域.com", custom_domain = true }
 ]
@@ -96,6 +99,9 @@ npm run db:init        # 在线上资料库建表
 npm run db:seed        # 写入 admin 帐号
 npm run deploy         # build + 部署
 ```
+
+部署完 wrangler 会印出你的网址（`https://rasa-crm.<帐号子域>.workers.dev`），
+抄下来，第 5 步要填进 Access。
 
 有资料要搬的话，再跑一次汇入（这次是 `--remote`）：
 
@@ -127,8 +133,8 @@ npx wrangler d1 execute rasa-crm --remote --file=./import.sql
 |---|---|---|
 | 1. 本机跑起来 | 免费 | 程式有问题，先修好再往下 |
 | 2. 搬资料 | 免费 | 资料出不来，至少程式是好的 |
-| 3. 网域 | ~US$10/年 | 这是唯一一定要花钱的地方 |
+| 3. 网域 | **可跳过** | 用 workers.dev 就好，Access 一样保护得到 |
 | 4. 部署 | 免费额度内 | — |
 | 5. Access | 免费（50 人内）| 可能要绑卡验证 |
 
-前两步做完，你手上就有一套确定能跑的东西了。第 3 步再决定要不要花那笔钱。
+整条路可以完全不花钱走完。网域纯粹是体验考量，随时能补。

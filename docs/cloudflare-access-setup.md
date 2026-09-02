@@ -31,23 +31,25 @@
 
 ---
 
-## 第 0 步：先确认前置条件（很重要，跳过后面会卡住）
+## 第 0 步：确认你的 CRM 网址
 
-Access 只保护「走 Cloudflare 代理的自订网域」。
-**`xxx.workers.dev` 这种网址 Access 保护不到**，任何人都能直接打到你的 worker。
-
-所以你的 CRM 必须挂在自己的网域上，例如 `crm.rasafoodhub.com`。
+Access 的 self-hosted application 是**按主机名**保护的，`*.workers.dev` 一样吃 ——
+不需要自订网域、不需要 zone、不用先花钱。
 
 1. 打开 <https://dash.cloudflare.com> → 左边 **Workers & Pages** → 点你的 CRM worker
 2. 上方分页 **Settings** → **Domains & Routes**
-3. 看看清单里有没有一个自订网域（像 `crm.rasafoodhub.com`）
-   - **有** → 记下这个网址，进行第 1 步
-   - **没有** → 点 **Add** → **Custom Domain** → 输入 `crm.你的网域.com` → **Add Domain**
-     （前提是这个网域已经加进 Cloudflare 帐号里）
-4. 同一个清单里如果看到 `xxx.workers.dev`，点它右边 **Remove / Disable**，把它关掉
+3. 把清单里的网址**完整抄下来**，等一下第 3 步要一字不差地填进 Access：
+   - `rasa-crm.你的帐号子域.workers.dev`，或
+   - 你自己的网域 `crm.rasafoodhub.com`（有的话）
 
-> ✅ **成功的样子**：Domains & Routes 里只剩一个自订网域，
-> 用浏览器打开它可以看到你的 CRM（这时还没有登入保护，正常）。
+两种都可以。`wrangler.toml` 预设 `workers_dev = true`，所以部署完就有一个能用的网址。
+
+> ✅ **成功的样子**：用浏览器打开那个网址看得到你的 CRM
+> （这时还没有登入保护，正常）。
+
+> 💡 **要不要买网域？** 跟 Access 能不能保护无关，纯粹是体验与长期维运：
+> 好记、不绑在 workers.dev 子域名上、日后搬家不用改 URL。
+> 可以先用 workers.dev 上线，之后再换。
 
 ---
 
@@ -91,9 +93,10 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
 2. 类型选 **Self-hosted**
 3. **Application name**：`Rasa CRM`
 4. **Session Duration**：选 `24 hours`（一天要重新登入一次；想少输入验证码就选 1 week）
-5. 往下找到 **Public hostname**（或 **Add public hostname**）填你的网址：
-   - Subdomain：`crm`
-   - Domain：从下拉选 `rasafoodhub.com`
+5. 往下找到 **Public hostname**（或 **Add public hostname**）填第 0 步抄下来的网址：
+   - 用 workers.dev → 直接把完整主机名填进去，例如
+     `rasa-crm.你的帐号子域.workers.dev`
+   - 用自订网域 → Subdomain 填 `crm`，Domain 从下拉选你的网域
    - Path：**留空**（留空 = 整个网站都保护，包含 `/api/*`）
 6. 下一步会到 **Access Policies** —— 这是第 4 步的内容，先照第 4 步做
 7. 再下一步 **Login methods**（有些版面叫 Authentication）：
@@ -107,7 +110,7 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
    是一长串英数字。点旁边的复制钮 → **这串等一下要贴进程式设定，抄下来**
 
 > ✅ **成功的样子**：Applications 清单里出现一列 `Rasa CRM`，
-> Type 是 `Self-hosted`，Hostname 是 `crm.rasafoodhub.com`。
+> Type 是 `Self-hosted`，Hostname 就是你第 0 步抄的那一串。
 > 而且你手上有两串东西了：team domain 和 AUD tag。
 
 ---
@@ -138,7 +141,7 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
 **测试 A：允许的 email 进得来**
 
 1. 开一个**无痕视窗**（Chrome：`Ctrl/Cmd + Shift + N`）
-2. 打开 `https://crm.rasafoodhub.com`
+2. 打开你的 CRM 网址
 3. 应该看到 **Cloudflare Access 的登入页**：一个 email 输入框 + **Send me a code** 按钮
 4. 输入 `rasafoodhubplt@gmail.com` → 按 **Send me a code**
 5. 画面变成「输入验证码」；同时你的信箱会收到一封信，
@@ -164,7 +167,7 @@ Access 只保护「走 Cloudflare 代理的自订网域」。
 在终端机执行（不带任何登入资讯）：
 
 ```bash
-curl -sSI https://crm.rasafoodhub.com/api/authcheck | head -5
+curl -sSI https://你的网址/api/authcheck | head -5
 ```
 
 > ✅ **成功的样子**：回 `HTTP/2 302`，`location` 指向
@@ -172,8 +175,8 @@ curl -sSI https://crm.rasafoodhub.com/api/authcheck | head -5
 > —— 代表请求连 worker 都没碰到就被 Access 拦下来了。
 >
 > ❌ **有问题的样子**：直接回一段 JSON（`"reason": "no_token"`）。
-> 这代表这个网址**没有**被 Access 保护，请回第 0 步确认
-> workers.dev 已关闭、第 3 步的 hostname 有没有打错。
+> 这代表这个网址**没有**被 Access 保护 —— 几乎都是 Application 的 hostname
+> 跟你实际打的网址对不上（少了子域、多了 www、打错字）。回第 3 步核对。
 
 **登出**（想重测时用）：打开 `https://你的team.cloudflareaccess.com/logout`
 
@@ -190,7 +193,8 @@ ACCESS_AUD = "第 3 步复制的那串 AUD tag"
 REQUIRE_USER_ROW = "true"
 ```
 
-同时确认 `routes` 里的网域是你自己的，而且 `workers_dev = false`。
+用 workers.dev 的话 `wrangler.toml` 不用再改什么。之后换成自订网域，
+再把 `workers_dev` 改 false 并打开 `routes` 那段。
 
 2. 建 D1 资料库（users 表放这里）：
 
@@ -203,10 +207,13 @@ npx wrangler d1 create rasa-crm
 3. 建表 + 填人：
 
 ```bash
-npm run db:init   # 建 users 表
+npm run db:init   # 建 users 表与 app_state 表
 npm run db:seed   # 写入 rasafoodhubplt@gmail.com = admin（内容在 seed.users.sql）
 npm run db:list   # 看一眼有没有写进去
 ```
+
+（在加入 `is_active` 栏位之前就跑过 `db:init` 的话，补一次：
+`npx wrangler d1 execute rasa-crm --remote --file=./migrations/001-add-is-active.sql`）
 
 > ✅ **成功的样子**：`db:list` 印出一行
 > `rasafoodhubplt@gmail.com | Rasa Admin | admin`。
@@ -234,7 +241,8 @@ npm run deploy  # 会先 build 再 wrangler deploy
 
 | `reason` | 意思 | 怎么修 |
 |---|---|---|
-| `no_token` | 请求没经过 Access | workers.dev 没关，或 Application 的 hostname 打错 |
+| `no_token` | 请求没经过 Access | Application 的 hostname 跟实际网址对不上 |
+| `user_inactive` | 在 users 表里但被停用 | 把 `is_active` 设回 1 |
 | `config_missing_team_domain` | 没填 team domain | 补 `wrangler.toml` 的 `ACCESS_TEAM_DOMAIN` |
 | `config_missing_aud` | 没填 AUD | 补 `wrangler.toml` 的 `ACCESS_AUD` |
 | `iss_mismatch` | team domain 填错 | 回 Settings → Custom Pages 看正确的 team domain |
@@ -269,5 +277,17 @@ npx wrangler d1 execute rasa-crm --remote \
 
 改完请对方重新整理页面。
 
-**踢掉一个人**：把他从 **Policy 的 email 清单里删掉**。
-只从 users 表删除是不够的 —— 挡人的是 Access，不是这张表。
+**踢掉一个人**（两层都建议做）：
+
+```bash
+# 立刻停权 —— 一行指令，不用进后台，下一个请求就挡住
+npx wrangler d1 execute rasa-crm --remote \
+  --command="UPDATE users SET is_active = 0 WHERE email = 'ahkit@example.com'"
+```
+
+然后回 Zero Trust 把他从 **Policy 的 email 清单**里删掉，
+他连 Access 登入页都过不了。
+
+两层的分工：**Access 决定能不能进门，users 表决定进来算不算数。**
+只做其中一层都有缺口 —— 只删 Policy，他手上的 session 要等重新验证；
+只设 `is_active = 0`，他还是能通过 Access 打到 worker（只是全部被挡）。

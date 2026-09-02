@@ -62,8 +62,10 @@ Access 会带两个东西进来：
 签不出过得了的 token。纯文字标头只在 `/api/authcheck` 里列出来给你对照，
 **不参与任何判断**。
 
-配套的一件事：`wrangler.toml` 里 `workers_dev = false`。
-`*.workers.dev` 不受 Access 保护，留着等于把上面这套全绕过去。
+要留意的是 Access application 的 hostname 必须涵盖你**实际对外的每一个网址**。
+`*.workers.dev` 本身是可以被 Access 保护的（self-hosted app 的 hostname
+直接填完整主机名即可），但如果你同时开了 workers.dev 和自订网域、
+却只替其中一个建了 application，另一个就是没锁的门。
 
 ## 两个设定不能动
 
@@ -71,9 +73,11 @@ Access 会带两个东西进来：
 直接回应，worker 根本不会执行，等于 `index.html` 和 `app.js` 不用登入就拿得到。
 （实机踩过这个坑：单元测试抓不到，因为测试是直接呼叫 worker 的 fetch。）
 
-**`DEV_BYPASS_EMAIL` 只放 `.dev.vars`** —— 那个档案已 gitignore，
-`wrangler deploy` 也不会带上去。程式里另外要求请求**不能有 `cf-ray` 标头**才生效；
-部署后所有流量都经过 Cloudflare 边缘、一定带 `cf-ray`，所以线上开不了门。
+**本机开发身分由编译期常数守门** —— `wrangler.toml` 的 `[define]` 把
+`__ALLOW_DEV_IDENTITY__` 固定成 `false`，只有 `npm run dev` 会用
+`--define` 覆写成 `true`。加上 `minify = true`，正式产物里那个函式
+只剩「回传 null」，判断依据不是任何来自请求的输入（hostname、标头都不是），
+所以打不动。
 
 ## 端点
 
@@ -94,17 +98,28 @@ Access 会带两个东西进来：
 角色只影响一件事：**只有 `admin` 看得到「团队活动」页**。
 其它页面两种角色都一样。
 
-- 谁**能不能登入** → Cloudflare Access 的 Policy 决定
-- 登入后**是什么角色** → `users` 表决定
+两层，缺一不可：
+
+- **能不能进门** → Cloudflare Access 的 Policy
+- **进来算不算数、能做什么** → `users` 表的 `is_active` 与 `role`
+
+通过 Access 只代表身分可信，不代表有权限。worker 每个请求都会再查一次
+`users` 表：不在表里、或 `is_active = 0`，一律挡下。
+所以停权一个人不必动 Access 后台：
+
+```bash
+npx wrangler d1 execute rasa-crm --remote \
+  --command="UPDATE users SET is_active = 0 WHERE email = 'ahkit@example.com'"
+```
 
 前端右上角的角色标签是唯读的。以前那个可以自己切 admin/staff 的下拉选单已经拿掉了 ——
 角色能自己选就不算权限。
 
 目前 `users` 表里只有一个人：
 
-| email | name | role |
-|---|---|---|
-| `rasafoodhubplt@gmail.com` | Rasa Admin | admin |
+| email | name | role | is_active |
+|---|---|---|---|
+| `rasafoodhubplt@gmail.com` | Rasa Admin | admin | 1 |
 
 内容在 `seed.users.sql`，改完跑 `npm run db:seed`。
 

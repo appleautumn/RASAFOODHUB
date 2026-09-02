@@ -84,10 +84,15 @@ const authed = async (path, email, init = {}) =>
 
 const ADMIN = "rasafoodhubplt@gmail.com";
 const STAFF = "ahkit@example.com";
+const SUSPENDED = "leaver@example.com";
 const users = [
-  { email: ADMIN, name: "Rasa Admin", role: "admin" },
-  { email: STAFF, name: "Ah Kit", role: "staff" },
+  { email: ADMIN, name: "Rasa Admin", role: "admin", is_active: 1 },
+  { email: STAFF, name: "Ah Kit", role: "staff", is_active: 1 },
+  { email: SUSPENDED, name: "已离职", role: "admin", is_active: 0 },
 ];
+
+// 正式部署时这个编译期常数固定是 false，本机开发身分整段不存在
+globalThis.__ALLOW_DEV_IDENTITY__ = false;
 
 test.beforeEach(() => clearJwksCache());
 
@@ -224,51 +229,88 @@ test("/api/authcheck 登入后回验证细节，且不外泄完整 AUD", async (
   assert.ok(!JSON.stringify(body).includes(AUD));
 });
 
-/* ------------------------ 本机开发身分（危险区） ------------------------ */
+/* ------------------------- 停权（第二层） ------------------------- */
 
-const CF_RAY = { "cf-ray": "8a1b2c3d4e5f6789-KUL" }; // 线上每个请求都会有
+test("is_active = 0 的人，通过 Access 也进不来", async () => {
+  const res = await worker.fetch(await authed("/api/me", SUSPENDED), baseEnv(fakeDb({ users })));
+  assert.equal(res.status, 401);
+  assert.equal((await res.json()).reason, "user_inactive");
+});
 
-test("本机（无 cf-ray）+ DEV_BYPASS_EMAIL -> 放行", async () => {
+test("停权的人连首页都拿不到", async () => {
+  const res = await worker.fetch(await authed("/", SUSPENDED), baseEnv(fakeDb({ users })));
+  assert.equal(res.status, 403);
+});
+
+test("停权的人读不到 CRM 资料", async () => {
+  const res = await worker.fetch(
+    await authed("/api/storage/rasa-crm:main", SUSPENDED),
+    baseEnv(fakeDb({ users }))
+  );
+  assert.equal(res.status, 401);
+});
+
+test("停权盖过角色：他在表里是 admin，一样挡", async () => {
+  const res = await worker.fetch(await authed("/api/admin/x", SUSPENDED), baseEnv(fakeDb({ users })));
+  assert.equal(res.status, 401);
+});
+
+test("/api/authcheck 会说是停权，不是没登入", async () => {
+  const body = await (await worker.fetch(await authed("/api/authcheck", SUSPENDED), baseEnv(fakeDb({ users })))).json();
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, "user_inactive");
+  assert.ok(body.hint.includes("is_active"));
+});
+
+/* --------------------- 本机开发身分（编译期开关） --------------------- */
+
+test("正式产物里（常数为 false）本机身分完全不存在", async () => {
+  globalThis.__ALLOW_DEV_IDENTITY__ = false;
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  assert.equal((await worker.fetch(req("/api/me"), env)).status, 401);
+  assert.equal((await worker.fetch(req("/"), env)).status, 403);
+  assert.equal((await worker.fetch(req("/app.js"), env)).status, 403);
+});
+
+test("常数为 false 时，改 hostname 或标头都撬不开", async () => {
+  globalThis.__ALLOW_DEV_IDENTITY__ = false;
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  const tries = [
+    new Request("http://localhost:8787/api/me"),
+    new Request("http://127.0.0.1:8787/api/me"),
+    new Request("http://localhost:8787/api/me", { headers: { "cf-ray": "" } }),
+    req("/api/me", { headers: { "Cf-Access-Authenticated-User-Email": ADMIN } }),
+  ];
+  for (const r of tries) assert.equal((await worker.fetch(r, env)).status, 401);
+});
+
+test("npm run dev（常数为 true）+ 有设 email -> 放行", async () => {
+  globalThis.__ALLOW_DEV_IDENTITY__ = true;
   const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
   const res = await worker.fetch(req("/api/me"), env);
   assert.equal(res.status, 200);
   assert.equal((await res.json()).user.role, "admin");
+  globalThis.__ALLOW_DEV_IDENTITY__ = false;
 });
 
-test("⚠️ 同样的设定，请求带了 cf-ray（= 线上流量）-> 照样挡掉", async () => {
-  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  const res = await worker.fetch(req("/api/me", { headers: CF_RAY }), env);
-  assert.equal(res.status, 401);
-  assert.equal((await res.json()).reason, "no_token");
-});
-
-test("⚠️ 线上流量连首页都不给（静态档也要先过验证）", async () => {
-  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  const res = await worker.fetch(req("/", { headers: CF_RAY }), env);
-  assert.equal(res.status, 403);
-  assert.ok(!(await res.text()).includes("CRM</html>"));
-});
-
-test("⚠️ 线上流量拿 app.js 也要先过验证", async () => {
-  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  assert.equal((await worker.fetch(req("/app.js", { headers: CF_RAY }), env)).status, 403);
-});
-
-test("没设 DEV_BYPASS_EMAIL 时，本机一样要验证", async () => {
+test("常数为 true 但没设 email -> 还是要验证", async () => {
+  globalThis.__ALLOW_DEV_IDENTITY__ = true;
   const res = await worker.fetch(req("/api/me"), baseEnv(fakeDb({ users })));
   assert.equal(res.status, 401);
+  globalThis.__ALLOW_DEV_IDENTITY__ = false;
 });
 
-test("走本机身分时 /api/authcheck 会明讲没验 JWT", async () => {
+test("本机身分不能绕过停权", async () => {
+  globalThis.__ALLOW_DEV_IDENTITY__ = true;
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: SUSPENDED };
+  assert.equal((await worker.fetch(req("/api/me"), env)).status, 401);
+  globalThis.__ALLOW_DEV_IDENTITY__ = false;
+});
+
+test("authcheck 报告本机身分的两个条件", async () => {
+  globalThis.__ALLOW_DEV_IDENTITY__ = false;
   const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
   const body = await (await worker.fetch(req("/api/authcheck"), env)).json();
-  assert.equal(body.devBypass, true);
-  assert.ok(body.warning.includes("没有验证任何 JWT"));
-});
-
-test("authcheck 会报告本机身分的两个条件，方便判断卡在哪", async () => {
-  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  const body = await (await worker.fetch(req("/api/authcheck", { headers: CF_RAY }), env)).json();
-  assert.equal(body.config.devBypassConfigured, true);
-  assert.equal(body.config.hasCfRay, true);
+  assert.equal(body.config.devIdentityCompiledIn, false);
+  assert.equal(body.config.devIdentityConfigured, true);
 });

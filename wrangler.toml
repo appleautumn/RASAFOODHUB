@@ -2,15 +2,26 @@ name = "rasa-crm"
 main = "src/index.js"
 compatibility_date = "2025-08-01"
 
-# ⚠️ 一定要关掉 workers.dev。
-# Access 只保护走 Cloudflare 代理的自订网域；*.workers.dev 绕得过去，
-# 留着等于在保护后面开了一扇没锁的后门。
-workers_dev = false
+# 打包时压缩。除了体积，也让 [define] 里那个常数的 false 分支被真的剥掉，
+# 而不是留成一段永远到不了的死码。
+minify = true
 
-# 你的 CRM 网址（换成自己的）
-routes = [
-  { pattern = "crm.rasafoodhub.com", custom_domain = true }
-]
+# 先用 workers.dev 上线就好。Cloudflare Access 保护得到它 ——
+# 在 Zero Trust 建 self-hosted application 时，hostname 那栏直接填
+# <worker名>.<帐号子域>.workers.dev 的完整主机名即可，不需要 zone。
+workers_dev = true
+
+# 之后买了自订网域，把上面改成 false，并打开这段：
+# routes = [
+#   { pattern = "crm.rasafoodhub.com", custom_domain = true }
+# ]
+
+# 本机开发身分的总开关，正式部署固定是 false。
+# npm run dev 会用 --define 覆写成 true；打包时 false 分支整段被消掉，
+# 正式产物里不存在那条路径。
+[define]
+__ALLOW_DEV_IDENTITY__ = "false"
+
 
 [vars]
 # Zero Trust > Settings > Custom Pages 看得到，长得像 rasafoodhub.cloudflareaccess.com

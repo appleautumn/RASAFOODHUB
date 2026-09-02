@@ -36,28 +36,30 @@ function deniedPage(title, message) {
 /* ------------------------------ 验证 ------------------------------ */
 
 /**
- * 本机开发用的身分。两个条件都成立才生效：
- *   1. 有设 DEV_BYPASS_EMAIL（放在 .dev.vars，已 gitignore，wrangler deploy 不会带上去）
- *   2. 请求上没有 cf-ray 标头
+ * 本机开发身分。
  *
- * 部署之后，所有打到 worker 的流量都会先经过 Cloudflare 边缘节点，
- * 由边缘盖上 cf-ray，外部无法移除。所以「没有 cf-ray」= 不是线上流量。
+ * 守门的是 __ALLOW_DEV_IDENTITY__，一个编译期常数：
+ *   - wrangler.toml 的 [define] 把它固定成 false
+ *   - 只有 npm run dev（--define __ALLOW_DEV_IDENTITY__:true）才是 true
  *
- * （原本这里判断 hostname 是不是 localhost，但 wrangler dev 会照 wrangler.toml
- *   的 route 模拟网址，本机跑起来 hostname 就是正式网址，判断不出来。）
+ * 打包时 `if (!false) return null` 会让整段后续程式码被消掉，
+ * 正式产物里根本不存在这条路径。
+ *
+ * 刻意不用任何来自请求的讯号（hostname、cf-ray 之类）当条件——
+ * 那些是请求方能影响的输入，编译期常数不是。
  */
-function devBypassEmail(request, env) {
-  const email = String(env.DEV_BYPASS_EMAIL || "").trim().toLowerCase();
-  if (!email) return null;
-  if (request.headers.get("cf-ray")) return null;
-  return email;
+function devIdentityEmail(env) {
+  if (!__ALLOW_DEV_IDENTITY__) return null;
+  return String(env.DEV_BYPASS_EMAIL || "").trim().toLowerCase() || null;
 }
 
 async function authenticate(request, env) {
-  const bypass = devBypassEmail(request, env);
+  const bypass = devIdentityEmail(env);
   if (bypass) {
     const resolved = await resolveUser(env, bypass);
-    if (!resolved.ok) return { ok: false, reason: resolved.reason, detail: `${bypass} 不在 users 表里` };
+    if (!resolved.ok) {
+      return { ok: false, reason: resolved.reason, detail: describeResolveFailure(resolved.reason, bypass) };
+    }
     return { ok: true, claims: null, user: resolved.user, devBypass: true };
   }
 
@@ -69,7 +71,9 @@ async function authenticate(request, env) {
   if (!result.ok) return result;
 
   const resolved = await resolveUser(env, result.email);
-  if (!resolved.ok) return { ok: false, reason: resolved.reason, detail: `${result.email} 不在 users 表里` };
+  if (!resolved.ok) {
+    return { ok: false, reason: resolved.reason, detail: describeResolveFailure(resolved.reason, result.email) };
+  }
 
   return { ok: true, claims: result.claims, user: resolved.user };
 }
@@ -93,10 +97,9 @@ async function handleAuthcheck(request, env) {
     audPrefix: aud ? `${aud.slice(0, 8)}…` : null,
     d1Bound: Boolean(env.DB),
     requireUserRow: String(env.REQUIRE_USER_ROW || "false").toLowerCase() === "true",
-    // 本机开发身分的两个条件，卡住时一眼看出是哪个不成立
-    devBypassConfigured: Boolean(String(env.DEV_BYPASS_EMAIL || "").trim()),
-    requestHostname: new URL(request.url).hostname,
-    hasCfRay: Boolean(request.headers.get("cf-ray")),
+    // 本机开发身分：两个都要成立才会生效
+    devIdentityCompiledIn: Boolean(__ALLOW_DEV_IDENTITY__),
+    devIdentityConfigured: Boolean(String(env.DEV_BYPASS_EMAIL || "").trim()),
   };
 
   const headers = {
@@ -106,7 +109,7 @@ async function handleAuthcheck(request, env) {
     plaintextEmailHeader: request.headers.get("Cf-Access-Authenticated-User-Email") || null,
   };
 
-  const bypass = devBypassEmail(request, env);
+  const bypass = devIdentityEmail(env);
   if (bypass) {
     const resolved = await resolveUser(env, bypass);
     return json({
@@ -157,9 +160,18 @@ async function handleAuthcheck(request, env) {
   });
 }
 
+const RESOLVE_DETAIL = {
+  user_inactive: (email) => `${email} 在 users 表里，但已停用（is_active = 0）`,
+  user_not_in_table: (email) => `${email} 通过了 Access，但不在 users 表里`,
+  db_not_bound: () => "worker 没有绑定 D1，查不了 users 表",
+};
+
+const describeResolveFailure = (reason, email) =>
+  (RESOLVE_DETAIL[reason] || (() => reason))(email);
+
 const HINTS = {
   no_token:
-    "这个请求没经过 Cloudflare Access。检查两件事：(1) 你是不是直接打 *.workers.dev（Access 保护不到它，要关掉并改用自订网域）；(2) Access Application 的 domain/path 有没有涵盖这个网址。",
+    "这个请求没经过 Cloudflare Access。检查 Access Application 的 hostname 有没有跟这个网址完全一致（含 workers.dev 的完整主机名），以及 path 有没有涵盖这条路径。",
   config_missing_team_domain: "wrangler.toml 的 [vars] 里补上 ACCESS_TEAM_DOMAIN。",
   config_missing_aud: "wrangler.toml 的 [vars] 里补上 ACCESS_AUD（Application 的 Application Audience Tag）。",
   aud_mismatch: "ACCESS_AUD 跟这个 Application 的 AUD 对不上，回 Zero Trust 后台复制一次。",
@@ -169,6 +181,7 @@ const HINTS = {
   bad_signature: "签章不对，这个 token 不是这个 team 发的。",
   unsupported_alg: "token 的演算法不是 RS256，直接挡掉。",
   db_not_bound: "wrangler.toml 里没有绑 D1（binding = \"DB\"）。",
+  user_inactive: "这个 email 在 users 表里，但 is_active = 0，已停用。要恢复就把它设回 1。",
   user_not_in_table: "这个 email 通过了 Access，但不在 users 表里。到 users 表新增一行，或把 REQUIRE_USER_ROW 关掉。",
 };
 

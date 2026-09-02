@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build && wrangler dev",
+    "dev": "npm run build && wrangler dev --define __ALLOW_DEV_IDENTITY__:true",
     "deploy": "npm run build && wrangler deploy",
     "db:init": "wrangler d1 execute rasa-crm --remote --file=./schema.sql",
     "db:seed": "wrangler d1 execute rasa-crm --remote --file=./seed.users.sql",
