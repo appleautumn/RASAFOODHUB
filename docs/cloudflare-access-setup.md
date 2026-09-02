@@ -215,10 +215,11 @@ npm run db:list   # 看一眼有没有写进去
 > 所以这三行**一定要在 `wrangler deploy` 之前跑完**，否则连你自己都会被挡在外面
 > （真的挡到了也不用慌：打开 `/api/authcheck` 会写 `user_not_in_table`，补跑 `db:seed` 就好）。
 
-4. 部署：
+4. 打包前端并部署：
 
 ```bash
-npx wrangler deploy
+npm install     # 第一次才需要
+npm run deploy  # 会先 build 再 wrangler deploy
 ```
 
 5. 回无痕视窗登入一次，然后打开

@@ -19,13 +19,27 @@ worker 只做一件事：**验证 Access 发的 JWT**，再从 `users` 表查这
 | `src/index.js` | worker 进入点：挡请求、`/api/me`、`/api/authcheck` |
 | `schema.sql` | `users` 表（email / name / role） |
 | `app/rasacrm.jsx` | CRM 前端，身分与角色改成向 `/api/me` 拿 |
+| `app/main.jsx` | 前端进入点，补上 `window.storage`（改打 worker，资料存 D1）|
+| `public/index.html` | 页面外壳，`npm run build` 会把 bundle 产到 `public/app.js` |
 | `test/access-jwt.test.mjs` | 20 个验证测试，含伪造 token 的情境 |
 | `scripts/setup-access.mjs` | 用 API token 一次建好 Access 的 Application、Policy、登入方式 |
 
 ```bash
-npm test        # 跑验证逻辑的测试（不需要网路、不需要 Cloudflare 帐号）
-npm run deploy  # 部署
+npm test        # 36 个测试，不需要网路、不需要 Cloudflare 帐号
+npm run build   # 打包前端到 public/app.js
+npm run deploy  # build + wrangler deploy
 ```
+
+## 资料存在哪
+
+原本的 CRM 用 `window.storage` 存资料 —— 那是 Claude Artifact 环境的 API，
+**一般浏览器里没有这个东西**。直接搬到 Workers 上，开页面就会跳「读取资料失败」。
+
+所以 `app/main.jsx` 补了一个同介面的实作，背后改打 `/api/storage/*`，
+资料存进 D1 的 `app_state` 表。`app/rasacrm.jsx` 里的程式码一行都没为此改动。
+
+副作用是好的：资料从「每个人浏览器里各一份」变成**全团队共用一份**，
+而且每次写入都记下是谁改的（`updated_by`）—— 对 CRM 来说这本来就是该有的样子。
 
 ## 为什么不信 `Cf-Access-Authenticated-User-Email`
 
@@ -52,6 +66,7 @@ Access 会带两个东西进来：
 |---|---|---|
 | `/api/authcheck` | 否（永远回 200） | 验证过程的诊断结果，设定填错时看这个 |
 | `/api/me` | 是 | `{ email, name, role, isAdmin }` |
+| `/api/storage/:key` | 是 | CRM 资料的读写（GET / PUT / DELETE），全团队共用一份 |
 | `/api/admin/*` | 是，且必须 `admin` | 之后要放只有 admin 能看的资料就挂这个前缀 |
 | 其它 | 是 | CRM 本体 |
 

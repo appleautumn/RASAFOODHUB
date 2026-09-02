@@ -9,3 +9,12 @@ CREATE TABLE IF NOT EXISTS users (
   -- email 一律存小写，worker 查询前也会转小写，两边才对得上
   CHECK (email = lower(email))
 );
+
+-- app_state：CRM 的资料（顾客、活动纪录、AI/自动化设定）。
+-- 前端原本呼叫 window.storage 存这些，现在改存这里，全团队共用同一份。
+CREATE TABLE IF NOT EXISTS app_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT NOT NULL DEFAULT ''
+);
