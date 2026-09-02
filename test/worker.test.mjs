@@ -226,35 +226,49 @@ test("/api/authcheck 登入后回验证细节，且不外泄完整 AUD", async (
 
 /* ------------------------ 本机开发身分（危险区） ------------------------ */
 
-test("本机 + DEV_BYPASS_EMAIL -> 放行，不需要任何 JWT", async () => {
-  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  const res = await worker.fetch(new Request("http://localhost:8787/api/me"), env);
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.user.role, "admin");
-});
+const CF_RAY = { "cf-ray": "8a1b2c3d4e5f6789-KUL" }; // 线上每个请求都会有
 
-test("⚠️ 同样的设定打在正式网址上 -> 照样挡掉", async () => {
+test("本机（无 cf-ray）+ DEV_BYPASS_EMAIL -> 放行", async () => {
   const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
   const res = await worker.fetch(req("/api/me"), env);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).user.role, "admin");
+});
+
+test("⚠️ 同样的设定，请求带了 cf-ray（= 线上流量）-> 照样挡掉", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  const res = await worker.fetch(req("/api/me", { headers: CF_RAY }), env);
   assert.equal(res.status, 401);
   assert.equal((await res.json()).reason, "no_token");
 });
 
-test("⚠️ 正式网址上连首页都不给", async () => {
+test("⚠️ 线上流量连首页都不给（静态档也要先过验证）", async () => {
   const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  assert.equal((await worker.fetch(req("/"), env)).status, 403);
+  const res = await worker.fetch(req("/", { headers: CF_RAY }), env);
+  assert.equal(res.status, 403);
+  assert.ok(!(await res.text()).includes("CRM</html>"));
 });
 
-test("没设 DEV_BYPASS_EMAIL 时，localhost 一样要验证", async () => {
-  const res = await worker.fetch(new Request("http://localhost:8787/api/me"), baseEnv(fakeDb({ users })));
+test("⚠️ 线上流量拿 app.js 也要先过验证", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  assert.equal((await worker.fetch(req("/app.js", { headers: CF_RAY }), env)).status, 403);
+});
+
+test("没设 DEV_BYPASS_EMAIL 时，本机一样要验证", async () => {
+  const res = await worker.fetch(req("/api/me"), baseEnv(fakeDb({ users })));
   assert.equal(res.status, 401);
 });
 
 test("走本机身分时 /api/authcheck 会明讲没验 JWT", async () => {
   const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
-  const res = await worker.fetch(new Request("http://localhost:8787/api/authcheck"), env);
-  const body = await res.json();
+  const body = await (await worker.fetch(req("/api/authcheck"), env)).json();
   assert.equal(body.devBypass, true);
   assert.ok(body.warning.includes("没有验证任何 JWT"));
+});
+
+test("authcheck 会报告本机身分的两个条件，方便判断卡在哪", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  const body = await (await worker.fetch(req("/api/authcheck", { headers: CF_RAY }), env)).json();
+  assert.equal(body.config.devBypassConfigured, true);
+  assert.equal(body.config.hasCfRay, true);
 });

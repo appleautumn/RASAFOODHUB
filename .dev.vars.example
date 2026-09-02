@@ -2,5 +2,5 @@
 #
 # 设了这个，跑 npm run dev 时就用这个 email 当登入身分，
 # 不用先弄好网域和 Cloudflare Access。
-# 只在 localhost 生效 —— 线上的 hostname 不可能是 localhost，所以开不了门。
+# 只在本机生效 —— 线上的请求都带 cf-ray 标头，带了就不会套用。
 DEV_BYPASS_EMAIL = "rasafoodhubplt@gmail.com"

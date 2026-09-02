@@ -38,16 +38,18 @@ function deniedPage(title, message) {
 /**
  * 本机开发用的身分。两个条件都成立才生效：
  *   1. 有设 DEV_BYPASS_EMAIL（放在 .dev.vars，已 gitignore，wrangler deploy 不会带上去）
- *   2. 请求打的是 localhost / 127.0.0.1
+ *   2. 请求上没有 cf-ray 标头
  *
- * 线上的 hostname 永远不可能是 localhost，所以就算不小心把这个变数设到
- * 正式环境，它也开不了门。
+ * 部署之后，所有打到 worker 的流量都会先经过 Cloudflare 边缘节点，
+ * 由边缘盖上 cf-ray，外部无法移除。所以「没有 cf-ray」= 不是线上流量。
+ *
+ * （原本这里判断 hostname 是不是 localhost，但 wrangler dev 会照 wrangler.toml
+ *   的 route 模拟网址，本机跑起来 hostname 就是正式网址，判断不出来。）
  */
 function devBypassEmail(request, env) {
   const email = String(env.DEV_BYPASS_EMAIL || "").trim().toLowerCase();
   if (!email) return null;
-  const host = new URL(request.url).hostname;
-  if (host !== "localhost" && host !== "127.0.0.1") return null;
+  if (request.headers.get("cf-ray")) return null;
   return email;
 }
 
@@ -91,6 +93,10 @@ async function handleAuthcheck(request, env) {
     audPrefix: aud ? `${aud.slice(0, 8)}…` : null,
     d1Bound: Boolean(env.DB),
     requireUserRow: String(env.REQUIRE_USER_ROW || "false").toLowerCase() === "true",
+    // 本机开发身分的两个条件，卡住时一眼看出是哪个不成立
+    devBypassConfigured: Boolean(String(env.DEV_BYPASS_EMAIL || "").trim()),
+    requestHostname: new URL(request.url).hostname,
+    hasCfRay: Boolean(request.headers.get("cf-ray")),
   };
 
   const headers = {

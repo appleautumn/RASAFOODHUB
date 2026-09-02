@@ -23,7 +23,8 @@ worker 只做一件事：**验证 Access 发的 JWT**，再从 `users` 表查这
 | `schema.sql` | `users` 表（email / name / role） |
 | `app/rasacrm.jsx` | CRM 前端，身分与角色改成向 `/api/me` 拿 |
 | `app/main.jsx` | 前端进入点，补上 `window.storage`（改打 worker，资料存 D1）|
-| `public/index.html` | 页面外壳，`npm run build` 会把 bundle 产到 `public/app.js` |
+| `public/index.html` | 页面外壳，`npm run build` 产出 `public/app.js` 与 `app.css` |
+| `tailwind.config.js` | Tailwind 在 build 时产生 CSS（不用 CDN，页面不依赖外部服务）|
 | `test/access-jwt.test.mjs` | 20 个验证测试，含伪造 token 的情境 |
 | `scripts/setup-access.mjs` | 用 API token 一次建好 Access 的 Application、Policy、登入方式 |
 | `scripts/import-data.mjs` | 把 Claude Artifact 汇出的资料转成 SQL 灌进 D1 |
@@ -63,6 +64,16 @@ Access 会带两个东西进来：
 
 配套的一件事：`wrangler.toml` 里 `workers_dev = false`。
 `*.workers.dev` 不受 Access 保护，留着等于把上面这套全绕过去。
+
+## 两个设定不能动
+
+**`wrangler.toml` 的 `run_worker_first = true`** —— 少了它，静态档会由资源层
+直接回应，worker 根本不会执行，等于 `index.html` 和 `app.js` 不用登入就拿得到。
+（实机踩过这个坑：单元测试抓不到，因为测试是直接呼叫 worker 的 fetch。）
+
+**`DEV_BYPASS_EMAIL` 只放 `.dev.vars`** —— 那个档案已 gitignore，
+`wrangler deploy` 也不会带上去。程式里另外要求请求**不能有 `cf-ray` 标头**才生效；
+部署后所有流量都经过 Cloudflare 边缘、一定带 `cf-ray`，所以线上开不了门。
 
 ## 端点
 

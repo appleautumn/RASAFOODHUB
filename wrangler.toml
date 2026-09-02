@@ -25,6 +25,9 @@ REQUIRE_USER_ROW = "true"
 [assets]
 directory = "./public"
 binding = "ASSETS"
+# ⚠️ 一定要留着。预设情况下静态档会由资源层直接回应，worker 根本不会执行 ——
+# 那等于 index.html 和 app.js 不用登入就拿得到。设 true 才会先跑 worker 验证。
+run_worker_first = true
 
 # users 表放这里。database_id 用 `wrangler d1 create rasa-crm` 之后贴回来。
 [[d1_databases]]
