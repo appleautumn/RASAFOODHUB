@@ -6,7 +6,10 @@
 
 worker 只做一件事：**验证 Access 发的 JWT**，再从 `users` 表查这个人的角色。
 
-👉 **第一次设定看这份：[docs/cloudflare-access-setup.md](docs/cloudflare-access-setup.md)**
+👉 **从 Claude Artifact 搬过来：[docs/migrate-from-artifact.md](docs/migrate-from-artifact.md)**
+👉 **Access 后台设定：[docs/cloudflare-access-setup.md](docs/cloudflare-access-setup.md)**
+
+先跑 `npm run dev` 在本机看它动起来 —— 不需要网域、不需要 Access、不用花钱。
 
 ---
 
@@ -23,6 +26,7 @@ worker 只做一件事：**验证 Access 发的 JWT**，再从 `users` 表查这
 | `public/index.html` | 页面外壳，`npm run build` 会把 bundle 产到 `public/app.js` |
 | `test/access-jwt.test.mjs` | 20 个验证测试，含伪造 token 的情境 |
 | `scripts/setup-access.mjs` | 用 API token 一次建好 Access 的 Application、Policy、登入方式 |
+| `scripts/import-data.mjs` | 把 Claude Artifact 汇出的资料转成 SQL 灌进 D1 |
 
 ```bash
 npm test        # 36 个测试，不需要网路、不需要 Cloudflare 帐号

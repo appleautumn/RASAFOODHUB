@@ -35,7 +35,30 @@ function deniedPage(title, message) {
 
 /* ------------------------------ 验证 ------------------------------ */
 
+/**
+ * 本机开发用的身分。两个条件都成立才生效：
+ *   1. 有设 DEV_BYPASS_EMAIL（放在 .dev.vars，已 gitignore，wrangler deploy 不会带上去）
+ *   2. 请求打的是 localhost / 127.0.0.1
+ *
+ * 线上的 hostname 永远不可能是 localhost，所以就算不小心把这个变数设到
+ * 正式环境，它也开不了门。
+ */
+function devBypassEmail(request, env) {
+  const email = String(env.DEV_BYPASS_EMAIL || "").trim().toLowerCase();
+  if (!email) return null;
+  const host = new URL(request.url).hostname;
+  if (host !== "localhost" && host !== "127.0.0.1") return null;
+  return email;
+}
+
 async function authenticate(request, env) {
+  const bypass = devBypassEmail(request, env);
+  if (bypass) {
+    const resolved = await resolveUser(env, bypass);
+    if (!resolved.ok) return { ok: false, reason: resolved.reason, detail: `${bypass} 不在 users 表里` };
+    return { ok: true, claims: null, user: resolved.user, devBypass: true };
+  }
+
   const token = readAccessToken(request);
   const result = await verifyAccessJwt(token, {
     teamDomain: env.ACCESS_TEAM_DOMAIN,
@@ -76,6 +99,19 @@ async function handleAuthcheck(request, env) {
     // 纯文字标头，只列出来给你对照 —— 系统不拿它当授权依据
     plaintextEmailHeader: request.headers.get("Cf-Access-Authenticated-User-Email") || null,
   };
+
+  const bypass = devBypassEmail(request, env);
+  if (bypass) {
+    const resolved = await resolveUser(env, bypass);
+    return json({
+      ok: resolved.ok,
+      devBypass: true,
+      warning: "目前走的是本机开发身分（DEV_BYPASS_EMAIL），没有验证任何 JWT。线上不会生效。",
+      user: resolved.ok ? resolved.user : null,
+      config,
+      headers,
+    });
+  }
 
   const verification = await verifyAccessJwt(token, {
     teamDomain: env.ACCESS_TEAM_DOMAIN,

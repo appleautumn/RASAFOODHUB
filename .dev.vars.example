@@ -1,0 +1,6 @@
+# 复制成 .dev.vars（已 gitignore，不会被 commit、也不会被 wrangler deploy 带上去）
+#
+# 设了这个，跑 npm run dev 时就用这个 email 当登入身分，
+# 不用先弄好网域和 Cloudflare Access。
+# 只在 localhost 生效 —— 线上的 hostname 不可能是 localhost，所以开不了门。
+DEV_BYPASS_EMAIL = "rasafoodhubplt@gmail.com"

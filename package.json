@@ -3,14 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
     "db:init": "wrangler d1 execute rasa-crm --remote --file=./schema.sql",
     "db:seed": "wrangler d1 execute rasa-crm --remote --file=./seed.users.sql",
     "db:list": "wrangler d1 execute rasa-crm --remote --command=\"SELECT email, name, role FROM users ORDER BY role, email\"",
     "test": "node --test test/*.test.mjs",
     "access:setup": "node scripts/setup-access.mjs",
-    "build": "esbuild app/main.jsx --bundle --minify --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"production\"' --outfile=public/app.js"
+    "build": "esbuild app/main.jsx --bundle --minify --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"production\"' --outfile=public/app.js",
+    "db:init:local": "wrangler d1 execute rasa-crm --local --file=./schema.sql",
+    "db:seed:local": "wrangler d1 execute rasa-crm --local --file=./seed.users.sql"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

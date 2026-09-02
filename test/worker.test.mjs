@@ -223,3 +223,38 @@ test("/api/authcheck 登入后回验证细节，且不外泄完整 AUD", async (
   assert.equal(body.user.role, "admin");
   assert.ok(!JSON.stringify(body).includes(AUD));
 });
+
+/* ------------------------ 本机开发身分（危险区） ------------------------ */
+
+test("本机 + DEV_BYPASS_EMAIL -> 放行，不需要任何 JWT", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  const res = await worker.fetch(new Request("http://localhost:8787/api/me"), env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.user.role, "admin");
+});
+
+test("⚠️ 同样的设定打在正式网址上 -> 照样挡掉", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  const res = await worker.fetch(req("/api/me"), env);
+  assert.equal(res.status, 401);
+  assert.equal((await res.json()).reason, "no_token");
+});
+
+test("⚠️ 正式网址上连首页都不给", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  assert.equal((await worker.fetch(req("/"), env)).status, 403);
+});
+
+test("没设 DEV_BYPASS_EMAIL 时，localhost 一样要验证", async () => {
+  const res = await worker.fetch(new Request("http://localhost:8787/api/me"), baseEnv(fakeDb({ users })));
+  assert.equal(res.status, 401);
+});
+
+test("走本机身分时 /api/authcheck 会明讲没验 JWT", async () => {
+  const env = { ...baseEnv(fakeDb({ users })), DEV_BYPASS_EMAIL: ADMIN };
+  const res = await worker.fetch(new Request("http://localhost:8787/api/authcheck"), env);
+  const body = await res.json();
+  assert.equal(body.devBypass, true);
+  assert.ok(body.warning.includes("没有验证任何 JWT"));
+});
