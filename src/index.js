@@ -8,6 +8,7 @@ import {
 } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
 import { handleApi, json } from "./api.js";
+import { handleWhatsApp } from "./whatsapp.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -256,6 +257,11 @@ export default {
 
     // 诊断端点：不挡，方便你自己检查设定
     if (url.pathname === "/api/authcheck") return handleAuthcheck(request, env);
+
+    // WhatsApp 桥接：机器对机器，验的是共用 secret 而不是使用者身分，
+    // 所以走在 authenticate() 前面 —— 桥接机没有浏览器、拿不到 OTP。
+    // WA_BRIDGE_SECRET 没设定时这一整组端点回 503，等于不存在。
+    if (url.pathname.startsWith("/api/wa/")) return handleWhatsApp(request, env, url);
 
     const auth = await authenticate(request, env);
     if (!auth.ok) {
