@@ -7,18 +7,9 @@ import {
   parseAudList,
 } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
+import { handleApi, json } from "./api.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
-}
 
 function deniedPage(title, message) {
   const html = `<!doctype html><meta charset="utf-8">
@@ -60,6 +51,48 @@ function devIdentityEmail(env) {
   return String(env.DEV_BYPASS_EMAIL || "").trim().toLowerCase() || null;
 }
 
+/* --------------------------- 观察模式 --------------------------- */
+
+/**
+ * ACCESS_ENFORCE 开关。
+ *
+ * "true"（预设）  = 验不过就挡下来
+ * "false"（观察） = 验不过**也放行**，但 /api/authcheck 照实回报本来会失败在哪
+ *
+ * 为什么要这个：Access application 刚建好的时候，team domain 或 AUD 很容易
+ * 贴错一个字。设定错 + 直接强制 = 你自己也进不去，而且进不去就看不到错在哪。
+ * 先跑观察模式，用真实登入确认 authcheck 回 ok，再改成强制部署。
+ */
+function enforcing(env) {
+  return String(env.ACCESS_ENFORCE ?? "true").trim().toLowerCase() !== "false";
+}
+
+/**
+ * 这个请求有没有真的经过 Cloudflare Access？
+ *
+ * ⚠️ 观察模式**只放行「经过了 Access、但 worker 这边验不过」的请求**。
+ * 完全没经过 Access 的请求，观察模式一样挡。
+ *
+ * 这一条是刻意加的，规格没写。少了它，观察模式 = 整个 CRM 连同顾客资料
+ * 直接公开在网际网路上 —— 只要有人知道网址就看得到。那个代价太大，
+ * 而它对「设定贴错字」这个真正要解决的问题一点帮助都没有：
+ * 贴错字的情境里 Access 是在的，JWT 也在，只是 worker 对不上而已。
+ */
+function cameThroughAccess(request) {
+  return Boolean(readAccessToken(request));
+}
+
+/** 观察模式下的身分。刻意是 staff：这个模式是拿来验证设定的，不是拿来当日常登入用的。 */
+function observeIdentity(reason, detail) {
+  return {
+    ok: true,
+    observeMode: true,
+    wouldHaveFailed: { reason, detail },
+    claims: null,
+    user: { email: "", name: "观察模式", role: "staff", knownUser: false },
+  };
+}
+
 async function authenticate(request, env) {
   const bypass = devIdentityEmail(env);
   if (bypass) {
@@ -75,11 +108,20 @@ async function authenticate(request, env) {
     teamDomain: env.ACCESS_TEAM_DOMAIN,
     aud: env.ACCESS_AUD,
   });
-  if (!result.ok) return result;
+  if (!result.ok) {
+    if (!enforcing(env) && cameThroughAccess(request)) {
+      return observeIdentity(result.reason, result.detail);
+    }
+    return result;
+  }
 
   const resolved = await resolveUser(env, result.email);
   if (!resolved.ok) {
-    return { ok: false, reason: resolved.reason, detail: describeResolveFailure(resolved.reason, result.email) };
+    const detail = describeResolveFailure(resolved.reason, result.email);
+    if (!enforcing(env) && cameThroughAccess(request)) {
+      return observeIdentity(resolved.reason, detail);
+    }
+    return { ok: false, reason: resolved.reason, detail };
   }
 
   return { ok: true, claims: result.claims, user: resolved.user };
@@ -104,6 +146,11 @@ async function handleAuthcheck(request, env) {
     audPrefix: parseAudList(aud).length > 0 ? `${aud.slice(0, 8)}…` : null,
     d1Bound: Boolean(env.DB),
     requireUserRow: String(env.REQUIRE_USER_ROW || "false").toLowerCase() === "true",
+    // 观察模式开着的时候，这里一定要看得到 —— 它会放行验不过的请求
+    enforce: enforcing(env),
+    enforceWarning: enforcing(env)
+      ? null
+      : "⚠️ 观察模式：通过 Access 但 worker 验不过的请求会被放行。确认下面 ok 是 true 之后，把 ACCESS_ENFORCE 改回 true 再部署。",
     // 本机开发身分：两个都要成立才会生效
     devIdentityCompiledIn: Boolean(__ALLOW_DEV_IDENTITY__),
     devIdentityConfigured: Boolean(String(env.DEV_BYPASS_EMAIL || "").trim()),
@@ -194,65 +241,6 @@ const HINTS = {
 
 /* ------------------------------ 路由 ------------------------------ */
 
-/* ---------------------------- 资料存取 ---------------------------- */
-
-const MAX_VALUE_BYTES = 1024 * 1024; // 1 MiB，超过就挡下来而不是让 D1 报怪错
-const VALID_KEY = /^[A-Za-z0-9:_\-.]{1,128}$/;
-
-/**
- * 取代原本 Claude Artifact 环境的 window.storage。
- * 资料是全团队共用的一份，所以每个请求都必须先通过 Access 验证（呼叫端已确保）。
- */
-async function handleStorage(request, env, url, user) {
-  if (!env.DB) return json({ ok: false, error: "db_not_bound" }, 500);
-
-  const key = decodeURIComponent(url.pathname.slice("/api/storage/".length));
-  if (!VALID_KEY.test(key)) return json({ ok: false, error: "bad_key" }, 400);
-
-  if (request.method === "GET") {
-    const row = await env.DB.prepare(
-      "SELECT key, value, updated_at, updated_by FROM app_state WHERE key = ?1"
-    )
-      .bind(key)
-      .first();
-    if (!row) return json({ ok: false, error: "not_found" }, 404);
-    return json({ key: row.key, value: row.value, updatedAt: row.updated_at, updatedBy: row.updated_by });
-  }
-
-  if (request.method === "PUT") {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ ok: false, error: "bad_json" }, 400);
-    }
-    const value = typeof body?.value === "string" ? body.value : null;
-    if (value === null) return json({ ok: false, error: "value_must_be_string" }, 400);
-    if (new TextEncoder().encode(value).length > MAX_VALUE_BYTES) {
-      return json({ ok: false, error: "too_large", detail: "单一 key 上限 1 MiB" }, 413);
-    }
-
-    await env.DB.prepare(
-      `INSERT INTO app_state (key, value, updated_at, updated_by)
-       VALUES (?1, ?2, datetime('now'), ?3)
-       ON CONFLICT(key) DO UPDATE SET
-         value = excluded.value,
-         updated_at = excluded.updated_at,
-         updated_by = excluded.updated_by`
-    )
-      .bind(key, value, user.email)
-      .run();
-    return json({ ok: true, key });
-  }
-
-  if (request.method === "DELETE") {
-    await env.DB.prepare("DELETE FROM app_state WHERE key = ?1").bind(key).run();
-    return json({ ok: true, key });
-  }
-
-  return json({ ok: false, error: "method_not_allowed" }, 405);
-}
-
 async function serveApp(request, env) {
   if (env.ASSETS) return env.ASSETS.fetch(request);
   // 还没接上前端静态档时的占位回应
@@ -287,16 +275,17 @@ export default {
       return json({ ok: true, user: { ...user, isAdmin: user.role === "admin" } });
     }
 
-    // CRM 的资料读写（前端的 window.storage 打这里）
-    if (url.pathname.startsWith("/api/storage/")) {
-      return handleStorage(request, env, url, user);
-    }
-
     // 之后要放只有 admin 能读的资料，挂在这个前缀底下就自动受保护
     if (url.pathname.startsWith("/api/admin/")) {
       if (user.role !== "admin") {
         return json({ ok: false, error: "forbidden", detail: "需要 admin 角色" }, 403);
       }
+    }
+
+    // CRM 的资料读写。资源导向的 REST，筛选与排序在 SQL 里做，
+    // 更新只写有改到的栏位并带乐观锁 —— 前端的 window.storage 转接层打这里。
+    if (url.pathname.startsWith("/api/")) {
+      return handleApi(request, env, url, user);
     }
 
     return serveApp(request, env);

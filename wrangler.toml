@@ -30,10 +30,24 @@ __ALLOW_DEV_IDENTITY__ = "false"
 
 
 [vars]
+# 目前的网址：https://rasa-crm.appleautumn-hhl.workers.dev
+# Access application 的 hostname 那栏要填的就是 rasa-crm.appleautumn-hhl.workers.dev
+#
 # Zero Trust > Settings > Custom Pages 看得到，长得像 rasafoodhub.cloudflareaccess.com
 ACCESS_TEAM_DOMAIN = "wandering-thunder-a8ee.cloudflareaccess.com"
 # Access > Applications > 你的 app > Overview 里的 Application Audience (AUD) Tag
 ACCESS_AUD = "4df450e96f3b28370eb1c8de865957eceecd75a8b9946cffa8e9b268711796a5"
+
+# 上线手法：不要一次到位，会把自己锁在外面。
+#
+#   "false" = 观察模式。经过了 Access 但 worker 这边验不过的请求照样放行，
+#             /api/authcheck 会照实说本来会失败在哪。用真实登入确认 ok 之后，
+#             再改成 true 重新部署。
+#   "true"  = 强制（预设）。
+#
+# ⚠️ 观察模式只放行「有经过 Access」的请求 —— 完全没经过 Access 的一样挡。
+#    所以就算忘记改回 true，CRM 也不会变成公开在网际网路上。
+ACCESS_ENFORCE = "true"
 # "true" = email 不在 users 表里就直接挡掉（目前只有一个人，用 true 比较紧）
 # "false" = 查不到就当 staff 放行
 REQUIRE_USER_ROW = "true"

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
 import { clearJwksCache } from "../src/access-jwt.js";
+import { createTestDb, seedUsers } from "./helpers/d1.mjs";
 
 const TEAM = "rasafoodhub.cloudflareaccess.com";
 const AUD = "test-aud-tag";
@@ -70,12 +71,13 @@ function fakeDb({ users = [], state = new Map() } = {}) {
   };
 }
 
-const baseEnv = (db) => ({
+const baseEnv = (db, overrides = {}) => ({
   ACCESS_TEAM_DOMAIN: TEAM,
   ACCESS_AUD: AUD,
   REQUIRE_USER_ROW: "true",
   DB: db,
   ASSETS: { fetch: async () => new Response("<html>CRM</html>", { headers: { "content-type": "text/html" } }) },
+  ...overrides,
 });
 
 const req = (path, init = {}) => new Request(`https://crm.rasafoodhub.com${path}`, init);
@@ -98,6 +100,11 @@ test.beforeEach(() => clearJwksCache());
 
 /* ------------------------------ 挡下来 ------------------------------ */
 
+// 「贴错 AUD」长这样：格式合法的 64 位十六进位串，只是不属于这个 application。
+// 不能拿中文或含空白的字串当例子 —— 那会被当成还没换掉的占位文字，
+// 回报 config_missing_aud 而不是 aud_mismatch。
+const WRONG_AUD = "b".padEnd(64, "0");
+
 test("没登入打首页 -> 403，不会吐出 CRM", async () => {
   const res = await worker.fetch(req("/"), baseEnv(fakeDb({ users })));
   assert.equal(res.status, 403);
@@ -119,7 +126,7 @@ test("只带纯文字 email 标头（伪造）-> 挡掉", async () => {
 });
 
 test("没登入也读不到 CRM 资料", async () => {
-  const res = await worker.fetch(req("/api/storage/rasa-crm:main"), baseEnv(fakeDb({ users })));
+  const res = await worker.fetch(req("/api/customers"), baseEnv(fakeDb({ users })));
   assert.equal(res.status, 401);
 });
 
@@ -150,48 +157,137 @@ test("登入后拿得到 CRM 页面", async () => {
 test("/api/admin/* 只有 admin 进得去", async () => {
   const env = baseEnv(fakeDb({ users }));
   assert.equal((await worker.fetch(await authed("/api/admin/anything", STAFF), env)).status, 403);
-  // admin 会穿过这道检查，往下走到静态资源
-  assert.equal((await worker.fetch(await authed("/api/admin/anything", ADMIN), env)).status, 200);
+  // admin 穿得过这道角色检查。底下还没有这条 admin 端点，所以是 404 ——
+  // 重点是「不是 403」：他没有被角色挡下来。
+  const asAdmin = await worker.fetch(await authed("/api/admin/anything", ADMIN), env);
+  assert.notEqual(asAdmin.status, 403);
+  assert.equal(asAdmin.status, 404);
 });
 
 /* --------------------------- 资料存取 --------------------------- */
 
+/** 真的 SQLite + 真的验证：整条路径一起验，不是只验路由 */
+function realEnv() {
+  const db = createTestDb();
+  seedUsers(db, users);
+  return baseEnv(db);
+}
+
 test("存进去再读出来，而且记得是谁改的", async () => {
-  const env = baseEnv(fakeDb({ users }));
-  const put = await worker.fetch(
-    await authed("/api/storage/rasa-crm:main", ADMIN, {
-      method: "PUT",
-      body: JSON.stringify({ value: '{"customers":[]}' }),
+  const env = realEnv();
+  const post = await worker.fetch(
+    await authed("/api/customers", ADMIN, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        customer: { id: "c1", name: "Nurul", stage: "new", updatedAt: "2026-09-01T00:00:00.000Z" },
+      }),
     }),
     env
   );
-  assert.equal(put.status, 200);
+  assert.equal(post.status, 201);
 
-  const get = await worker.fetch(await authed("/api/storage/rasa-crm:main", ADMIN), env);
+  const get = await worker.fetch(await authed("/api/customers/c1", ADMIN), env);
   const body = await get.json();
-  assert.equal(body.value, '{"customers":[]}');
-  assert.equal(body.updatedBy, ADMIN);
+  assert.equal(body.customer.name, "Nurul");
+  assert.equal(body.customer.updatedBy, ADMIN);
 });
 
-test("没存过的 key 回 404（前端当成「第一次使用」）", async () => {
-  const res = await worker.fetch(await authed("/api/storage/rasa-crm:log", ADMIN), baseEnv(fakeDb({ users })));
+test("没存过的设定回 404（前端当成「第一次使用」）", async () => {
+  const res = await worker.fetch(await authed("/api/settings/apps.ai", ADMIN), realEnv());
   assert.equal(res.status, 404);
 });
 
-test("乱七八糟的 key 会被挡", async () => {
-  const res = await worker.fetch(await authed("/api/storage/..%2Fetc%2Fpasswd", ADMIN), baseEnv(fakeDb({ users })));
+test("乱七八糟的 id 会被挡", async () => {
+  const res = await worker.fetch(await authed("/api/customers/..%2Fetc%2Fpasswd", ADMIN), realEnv());
   assert.equal(res.status, 400);
 });
 
-test("超过 1 MiB 的资料会被挡", async () => {
+test("超大的请求内容会被挡，而不是让 D1 报怪错", async () => {
   const res = await worker.fetch(
-    await authed("/api/storage/rasa-crm:main", ADMIN, {
+    await authed("/api/settings/apps.ai", ADMIN, {
       method: "PUT",
-      body: JSON.stringify({ value: "x".repeat(1024 * 1024 + 1) }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value: "x".repeat(4 * 1024 * 1024 + 1) }),
     }),
-    baseEnv(fakeDb({ users }))
+    realEnv()
   );
   assert.equal(res.status, 413);
+});
+
+/* --------------------- 观察模式（ACCESS_ENFORCE） --------------------- */
+
+const observing = (db) => baseEnv(db, { ACCESS_ENFORCE: "false" });
+
+test("观察模式：设定填错（AUD 对不上）但有经过 Access -> 放行", async () => {
+  const env = observing(fakeDb({ users }));
+  env.ACCESS_AUD = WRONG_AUD;
+  const res = await worker.fetch(await authed("/api/me", ADMIN), env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.user.name, "观察模式");
+});
+
+test("观察模式：完全没经过 Access 的请求，一样挡", async () => {
+  const env = observing(fakeDb({ users }));
+  // 这一条是整个开关最重要的性质 —— 忘记改回 true 也不会把 CRM 公开在网路上
+  assert.equal((await worker.fetch(req("/api/me"), env)).status, 401);
+  assert.equal((await worker.fetch(req("/"), env)).status, 403);
+  assert.equal((await worker.fetch(req("/api/customers"), env)).status, 401);
+});
+
+test("观察模式：伪造的纯文字 email 标头不算「经过 Access」", async () => {
+  const env = observing(fakeDb({ users }));
+  const res = await worker.fetch(
+    req("/api/me", { headers: { "Cf-Access-Authenticated-User-Email": ADMIN } }),
+    env
+  );
+  assert.equal(res.status, 401);
+});
+
+test("观察模式：不在 users 表里的人也放行，但只有 staff 权限", async () => {
+  const env = observing(fakeDb({ users }));
+  const res = await worker.fetch(await authed("/api/me", "stranger@example.com"), env);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).user.role, "staff");
+  // 观察模式不是万能钥匙：admin 专属的东西还是进不去
+  assert.equal(
+    (await worker.fetch(await authed("/api/admin/x", "stranger@example.com"), env)).status,
+    403
+  );
+});
+
+test("观察模式：authcheck 会大声讲开关开着，并说明本来会失败在哪", async () => {
+  const env = observing(fakeDb({ users }));
+  env.ACCESS_AUD = WRONG_AUD;
+  const body = await (await worker.fetch(await authed("/api/authcheck", ADMIN), env)).json();
+  assert.equal(body.config.enforce, false);
+  assert.match(body.config.enforceWarning, /观察模式/);
+  assert.equal(body.reason, "aud_mismatch");
+});
+
+test("预设是强制：没设 ACCESS_ENFORCE 就等于 true", async () => {
+  const env = baseEnv(fakeDb({ users }));
+  delete env.ACCESS_ENFORCE;
+  env.ACCESS_AUD = WRONG_AUD;
+  assert.equal((await worker.fetch(await authed("/api/me", ADMIN), env)).status, 401);
+  const body = await (await worker.fetch(req("/api/authcheck"), env)).json();
+  assert.equal(body.config.enforce, true);
+  assert.equal(body.config.enforceWarning, null);
+});
+
+test("强制模式下，停权的人不会因为观察模式的程式码而漏进来", async () => {
+  const env = observing(fakeDb({ users }));
+  // 停权是授权层的决定，观察模式只放宽「验证」那一层 ——
+  // 但停权的人在观察模式下会被当成未知使用者放行成 staff，
+  // 所以这个模式绝对不能长期开着。这一条把行为钉住，免得日后有人以为它安全。
+  const res = await worker.fetch(await authed("/api/me", SUSPENDED), env);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).user.role, "staff");
+
+  // 改回强制就挡住
+  const strict = baseEnv(fakeDb({ users }));
+  assert.equal((await worker.fetch(await authed("/api/me", SUSPENDED), strict)).status, 401);
 });
 
 /* ------------------------- users 表与诊断 ------------------------- */
@@ -244,7 +340,7 @@ test("停权的人连首页都拿不到", async () => {
 
 test("停权的人读不到 CRM 资料", async () => {
   const res = await worker.fetch(
-    await authed("/api/storage/rasa-crm:main", SUSPENDED),
+    await authed("/api/customers", SUSPENDED),
     baseEnv(fakeDb({ users }))
   );
   assert.equal(res.status, 401);

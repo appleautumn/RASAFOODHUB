@@ -40,11 +40,31 @@ npm run deploy  # build + wrangler deploy
 原本的 CRM 用 `window.storage` 存资料 —— 那是 Claude Artifact 环境的 API，
 **一般浏览器里没有这个东西**。直接搬到 Workers 上，开页面就会跳「读取资料失败」。
 
-所以 `app/main.jsx` 补了一个同介面的实作，背后改打 `/api/storage/*`，
-资料存进 D1 的 `app_state` 表。`app/rasacrm.jsx` 里的程式码一行都没为此改动。
+所以 `app/main.jsx` 补了一个同介面的实作（`app/storage-client.js`）。
+`app/rasacrm.jsx` 里的程式码一行都没为此改动。
 
 副作用是好的：资料从「每个人浏览器里各一份」变成**全团队共用一份**，
 而且每次写入都记下是谁改的（`updated_by`）—— 对 CRM 来说这本来就是该有的样子。
+
+### 底下是关联式资料表，不是一整包 JSON
+
+一开始 `/api/storage/:key` 是 key-value 形状：整包 JSON 存进 D1 一个栏位，
+读的时候整包捞出来。那个形状有一个不会报错的资料遗失问题 ——
+**整包读 → 改 → 整包写 = 最后写入者全覆盖**。两个员工同时开着系统，
+一个改 A 顾客、一个改 B 顾客，后存的那个会把前一个的改动整个盖掉，
+没有冲突提示，没人会发现。
+
+现在拆成 `customers` / `messages` / `notes` / `orders` / `tasks` /
+`customer_tags` / `activities` / `settings`（见 `schema.sql`），API 也换成
+资源导向的 REST：
+
+- 筛选与排序在 SQL 里做（`WHERE` / `ORDER BY`），不是整包捞回前端过滤
+- 分页用 cursor（keyset），第 100 页跟第 1 页一样快
+- `PATCH` **只送有改到的栏位**，所以改不同顾客不会互相影响
+- 同一位顾客的竞争由 `updated_at` 乐观锁挡下：对不上回 **409**，
+  呼叫端重新载入，不会默默覆盖
+
+`window.storage` 的介面形状完全没变，页面不知道底下换了引擎。
 
 ## 为什么不信 `Cf-Access-Authenticated-User-Email`
 
@@ -85,7 +105,20 @@ Access 会带两个东西进来：
 |---|---|---|
 | `/api/authcheck` | 否（永远回 200） | 验证过程的诊断结果，设定填错时看这个 |
 | `/api/me` | 是 | `{ email, name, role, isAdmin }` |
-| `/api/storage/:key` | 是 | CRM 资料的读写（GET / PUT / DELETE），全团队共用一份 |
+| `GET /api/customers` | 是 | 顾客名单。`?stage=&priority=&tag=&excludeTag=&needsReply=&search=&sort=&cursor=&limit=&include=timeline` |
+| `POST /api/customers` | 是 | 新增一位顾客 |
+| `DELETE /api/customers` | 是 | 全部清空（前端的 resetAll） |
+| `GET /api/customers/:id` | 是 | 单一顾客，含标签与时间轴 |
+| `PATCH /api/customers/:id` | 是 | **只改送来的栏位**。要带 `updatedAt` 当乐观锁，对不上回 409 |
+| `DELETE /api/customers/:id` | 是 | 删一位顾客（讯息 / 备注 / 标签一起走） |
+| `GET·POST /api/customers/:id/messages` | 是 | 该顾客的讯息，cursor 分页 |
+| `GET·POST /api/customers/:id/timeline` | 是 | 时间轴（messages ∪ notes） |
+| `GET·POST /api/customers/:id/notes` | 是 | 内部备注与系统事件 |
+| `GET·POST /api/customers/:id/orders` | 是 | 订单（表已建好，UI 还没用到） |
+| `GET·POST /api/customers/:id/tasks` | 是 | 任务（表已建好，UI 还没用到） |
+| `GET /api/stage-counts` | 是 | 每阶段人数，一次 `GROUP BY` |
+| `GET·POST·DELETE /api/activities` | 是 | 团队操作纪录，只新增不覆盖 |
+| `GET·PUT·DELETE /api/settings/:key` | 是 | 系统设定（`apps.ai` / `apps.automation` / `apps.campaigns`），也有乐观锁 |
 | `/api/admin/*` | 是，且必须 `admin` | 之后要放只有 admin 能看的资料就挂这个前缀 |
 | 其它 | 是 | CRM 本体 |
 
