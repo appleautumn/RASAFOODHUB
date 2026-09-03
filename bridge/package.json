@@ -5,7 +5,7 @@
   "type": "module",
   "description": "WhatsApp 桥接机：常驻主机上跑 Baileys，把讯息转给 rasa-crm Worker",
   "engines": {
-    "node": ">=20 <23"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node src/index.js",
@@ -14,5 +14,6 @@
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "qrcode": "^1.5.4"
-  }
+  },
+  "packageManager": "npm@10.9.7"
 }
