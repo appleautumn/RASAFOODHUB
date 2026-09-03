@@ -179,7 +179,7 @@ const describeResolveFailure = (reason, email) =>
 const HINTS = {
   no_token:
     "这个请求没经过 Cloudflare Access。检查 Access Application 的 hostname 有没有跟这个网址完全一致（含 workers.dev 的完整主机名），以及 path 有没有涵盖这条路径。",
-  config_missing_team_domain: "wrangler.toml 的 [vars] 里补上 ACCESS_TEAM_DOMAIN。",
+  config_missing_team_domain: "wrangler.toml 的 [vars] 里补上 ACCESS_TEAM_DOMAIN（还留着 your-team… 那种占位文字也算没设定）。",
   config_missing_aud: "wrangler.toml 的 [vars] 里补上 ACCESS_AUD（Application 的 Application Audience Tag）。",
   aud_mismatch: "ACCESS_AUD 跟这个 Application 的 AUD 对不上，回 Zero Trust 后台复制一次。",
   iss_mismatch: "ACCESS_TEAM_DOMAIN 填错了，应该是 Zero Trust > Settings > Custom Pages 里看到的 team domain。",

@@ -71,19 +71,23 @@ Access 的 self-hosted application 是**按主机名**保护的，`*.workers.dev
 
 ---
 
-## 第 2 步：把登入方式设成 One-time PIN（Email OTP）
+## 第 2 步：确认 One-time PIN（Email OTP）在清单里
 
-先设登入方式，等一下建 Application 时才选得到。
+**这一步不用做任何设定，只是确认。**
 
-1. 左边选单 **Settings**（最下面）→ **Authentication**
-2. 找到 **Login methods** 区块
-3. 里面本来就会有一个 **One-time PIN** —— 这就是 Email OTP，Cloudflare 内建，不用设定、不用申请
-4. 如果清单里还有 Google、GitHub 之类的，先不用管，第 3 步会指定只用 One-time PIN
+One-time PIN 是 Cloudflare 内建的，**永远存在、无法删除、也没有开关** ——
+所以你在后台**找不到「启用 One-time PIN」这个按钮，这是正常的**，不是你漏看。
+
+想亲眼确认的话：左边选单 **Settings** → **Authentication** → **Login methods** 区块，
+清单里会有一张 **One-time PIN**，旁边没有开关（其他 IdP 才有）。
+找不到 Authentication 这页也不影响后面的步骤，直接跳到第 3 步。
 
 > 「寄验证码到 email」就是这一项，Cloudflare 自己寄、自己验，
 > 不用申请、不用接 SMTP、不用买寄信服务，我们也不写任何程式。
 
-> ✅ **成功的样子**：Login methods 清单里看得到 **One-time PIN**（它无法被删除，一定存在）。
+> 真正「指定只用 One-time PIN」的地方在第 3 步的 **Login methods**
+> 那一页，不在这里。如果你没接过 Google / GitHub 之类的 IdP，
+> OTP 本来就是唯一选项，登入页会直接显示 **Send me a code**。
 
 ---
 
@@ -102,6 +106,7 @@ Access 的 self-hosted application 是**按主机名**保护的，`*.workers.dev
 7. 再下一步 **Login methods**（有些版面叫 Authentication）：
    - 把 **Accept all available identity providers** 关掉
    - 只勾 **One-time PIN**
+   - 没接过其他 IdP 的话，这个开关开着也一样只会有 OTP 可用，不必纠结
 8. 按 **Save**
 
 建完之后回到 **Access → Applications**，点进 `Rasa CRM`：

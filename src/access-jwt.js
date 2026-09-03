@@ -35,16 +35,36 @@ function base64urlToJSON(input) {
 }
 
 /**
+ * 设定档里的占位说明文字。还留着这些就是没填过，当作没设定 ——
+ * 跟 parseAudList 同一个理由：不这样的话 /api/authcheck 会说「已设定」，
+ * 然后拿假 team domain 去抓 JWKS，错误讯息会把人指向错的方向。
+ */
+const TEAM_DOMAIN_PLACEHOLDERS = new Set([
+  "your-team",
+  "your-team.cloudflareaccess.com",
+  "team-name",
+  "team-name.cloudflareaccess.com",
+  "example",
+  "example.cloudflareaccess.com",
+]);
+
+/**
  * 把使用者可能填的各种写法都收敛成 team domain：
  *   "rasafoodhub"                              -> rasafoodhub.cloudflareaccess.com
  *   "rasafoodhub.cloudflareaccess.com"         -> 原样
  *   "https://rasafoodhub.cloudflareaccess.com/"-> 去掉协定与结尾斜线
+ *
+ * 没填、填的是占位文字、或根本不是主机名 -> 回空字串（呼叫端当作没设定）。
  */
 export function normalizeTeamDomain(raw) {
   let value = String(raw || "").trim().toLowerCase();
   if (!value) return "";
   value = value.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  // 主机名只会是可见 ASCII。含空白或中文的多半是还没换掉的说明文字。
+  if (!/^[\x21-\x7e]+$/.test(value)) return "";
+  if (/^[<{].*[>}]$/.test(value)) return "";
   if (!value.includes(".")) value = `${value}.cloudflareaccess.com`;
+  if (TEAM_DOMAIN_PLACEHOLDERS.has(value)) return "";
   return value;
 }
 
