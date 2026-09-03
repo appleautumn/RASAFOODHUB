@@ -39,6 +39,21 @@ const PATCHABLE = [
 const sameTags = (a = [], b = []) =>
   a.length === b.length && [...a].sort().join(" ") === [...b].sort().join(" ");
 
+/**
+ * 冲突讯息里要出现的名字。
+ * 顾客 id 是随机字串（fx0000、a3k9x2m1…），对员工来说没有任何意义 ——
+ * 要让他一眼知道是哪一位顾客被别人改过，才知道该去看谁。
+ */
+const describe = (c) =>
+  String(c && (c.name || c.whatsapp) || "").trim() || `顾客 ${c && c.id}`;
+
+// 设定分区的中文名。同理，「automation」对员工也不是人话。
+const SECTION_LABEL = {
+  ai: "AI 知识库",
+  automation: "自动化设定",
+  campaigns: "群发名单",
+};
+
 export function createStorageClient({ fetch: fetchImpl = globalThis.fetch.bind(globalThis) } = {}) {
   /**
    * 伺服器上「我最后一次看到的样子」。
@@ -177,7 +192,7 @@ export function createStorageClient({ fetch: fetchImpl = globalThis.fetch.bind(g
       // 撞过 409 的顾客不再尝试写入：那会用新的 updatedAt 把别人的改动盖掉，
       // 正是这次要修掉的行为。要恢复只能重新载入页面。
       if (snapshot.conflicted.has(c.id)) {
-        conflicts.push(c.id);
+        conflicts.push({ id: c.id, name: describe(c) });
         continue;
       }
 
@@ -194,7 +209,7 @@ export function createStorageClient({ fetch: fetchImpl = globalThis.fetch.bind(g
 
       if (r.status === 409) {
         // 别人在我读取之后改过这笔。把伺服器上的版本记下来，但不覆盖。
-        conflicts.push(c.id);
+        conflicts.push({ id: c.id, name: describe(c) });
         snapshot.conflicted.add(c.id);
         if (r.body && r.body.current) remember(r.body.current);
         continue;
@@ -216,12 +231,16 @@ export function createStorageClient({ fetch: fetchImpl = globalThis.fetch.bind(g
     }
 
     if (conflicts.length) {
+      // 讯息给人看，所以讲名字；err.conflicts 给程式用，所以是 id。
+      const names = conflicts.slice(0, 3).map((c) => c.name).join("、");
+      const more = conflicts.length > 3 ? ` 等 ${conflicts.length} 位` : "";
       const err = new Error(
-        `有 ${conflicts.length} 位顾客在你读取之后被别人改过了，这些改动没有存下来。` +
-          `请重新整理页面拿最新资料再改一次。（${conflicts.slice(0, 5).join(", ")}）`
+        `${names}${more}已经被其他同事改过了，你刚才对${conflicts.length > 1 ? "他们" : "他"}的修改没有存进去。` +
+          `请重新载入拿到最新资料，再改一次。`
       );
       err.code = "conflict";
-      err.conflicts = conflicts;
+      err.conflicts = conflicts.map((c) => c.id);
+      err.conflictNames = conflicts.map((c) => c.name);
       throw err;
     }
   }
@@ -258,7 +277,10 @@ export function createStorageClient({ fetch: fetchImpl = globalThis.fetch.bind(g
             updatedAt: r.body.current.updated_at,
           });
         }
-        const err = new Error(`设定「${section}」被别人改过了，请重新整理页面再改一次。`);
+        const err = new Error(
+          `「${SECTION_LABEL[section] || section}」已经被其他同事改过了，你刚才的修改没有存进去。` +
+            `请重新载入拿到最新资料，再改一次。`
+        );
         err.code = "conflict";
         throw err;
       }

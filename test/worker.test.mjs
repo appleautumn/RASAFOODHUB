@@ -71,12 +71,13 @@ function fakeDb({ users = [], state = new Map() } = {}) {
   };
 }
 
-const baseEnv = (db) => ({
+const baseEnv = (db, overrides = {}) => ({
   ACCESS_TEAM_DOMAIN: TEAM,
   ACCESS_AUD: AUD,
   REQUIRE_USER_ROW: "true",
   DB: db,
   ASSETS: { fetch: async () => new Response("<html>CRM</html>", { headers: { "content-type": "text/html" } }) },
+  ...overrides,
 });
 
 const req = (path, init = {}) => new Request(`https://crm.rasafoodhub.com${path}`, init);
@@ -207,6 +208,81 @@ test("超大的请求内容会被挡，而不是让 D1 报怪错", async () => {
     realEnv()
   );
   assert.equal(res.status, 413);
+});
+
+/* --------------------- 观察模式（ACCESS_ENFORCE） --------------------- */
+
+const observing = (db) => baseEnv(db, { ACCESS_ENFORCE: "false" });
+
+test("观察模式：设定填错（AUD 对不上）但有经过 Access -> 放行", async () => {
+  const env = observing(fakeDb({ users }));
+  env.ACCESS_AUD = "贴错的-aud";
+  const res = await worker.fetch(await authed("/api/me", ADMIN), env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.user.name, "观察模式");
+});
+
+test("观察模式：完全没经过 Access 的请求，一样挡", async () => {
+  const env = observing(fakeDb({ users }));
+  // 这一条是整个开关最重要的性质 —— 忘记改回 true 也不会把 CRM 公开在网路上
+  assert.equal((await worker.fetch(req("/api/me"), env)).status, 401);
+  assert.equal((await worker.fetch(req("/"), env)).status, 403);
+  assert.equal((await worker.fetch(req("/api/customers"), env)).status, 401);
+});
+
+test("观察模式：伪造的纯文字 email 标头不算「经过 Access」", async () => {
+  const env = observing(fakeDb({ users }));
+  const res = await worker.fetch(
+    req("/api/me", { headers: { "Cf-Access-Authenticated-User-Email": ADMIN } }),
+    env
+  );
+  assert.equal(res.status, 401);
+});
+
+test("观察模式：不在 users 表里的人也放行，但只有 staff 权限", async () => {
+  const env = observing(fakeDb({ users }));
+  const res = await worker.fetch(await authed("/api/me", "stranger@example.com"), env);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).user.role, "staff");
+  // 观察模式不是万能钥匙：admin 专属的东西还是进不去
+  assert.equal(
+    (await worker.fetch(await authed("/api/admin/x", "stranger@example.com"), env)).status,
+    403
+  );
+});
+
+test("观察模式：authcheck 会大声讲开关开着，并说明本来会失败在哪", async () => {
+  const env = observing(fakeDb({ users }));
+  env.ACCESS_AUD = "贴错的-aud";
+  const body = await (await worker.fetch(await authed("/api/authcheck", ADMIN), env)).json();
+  assert.equal(body.config.enforce, false);
+  assert.match(body.config.enforceWarning, /观察模式/);
+  assert.equal(body.reason, "aud_mismatch");
+});
+
+test("预设是强制：没设 ACCESS_ENFORCE 就等于 true", async () => {
+  const env = baseEnv(fakeDb({ users }));
+  delete env.ACCESS_ENFORCE;
+  env.ACCESS_AUD = "贴错的-aud";
+  assert.equal((await worker.fetch(await authed("/api/me", ADMIN), env)).status, 401);
+  const body = await (await worker.fetch(req("/api/authcheck"), env)).json();
+  assert.equal(body.config.enforce, true);
+  assert.equal(body.config.enforceWarning, null);
+});
+
+test("强制模式下，停权的人不会因为观察模式的程式码而漏进来", async () => {
+  const env = observing(fakeDb({ users }));
+  // 停权是授权层的决定，观察模式只放宽「验证」那一层 ——
+  // 但停权的人在观察模式下会被当成未知使用者放行成 staff，
+  // 所以这个模式绝对不能长期开着。这一条把行为钉住，免得日后有人以为它安全。
+  const res = await worker.fetch(await authed("/api/me", SUSPENDED), env);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).user.role, "staff");
+
+  // 改回强制就挡住
+  const strict = baseEnv(fakeDb({ users }));
+  assert.equal((await worker.fetch(await authed("/api/me", SUSPENDED), strict)).status, 401);
 });
 
 /* ------------------------- users 表与诊断 ------------------------- */

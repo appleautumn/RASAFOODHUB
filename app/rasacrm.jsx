@@ -561,7 +561,14 @@ export default function App() {
       try {
         await window.storage.set(KEY_MAIN, JSON.stringify({ customers }));
       } catch (e) {
-        setToast("储存失败，刚才的改动可能没存下来。");
+        // 冲突不是「重试一下就好」的错误 —— 别人已经改过这笔，
+        // 你手上的版本是旧的，只能重新载入。所以讯息要讲清楚是谁、
+        // 而且不能两秒就消失，要留着直到他处理。
+        setToast(
+          e && e.code === "conflict"
+            ? { text: e.message, tone: "conflict", sticky: true }
+            : "储存失败，刚才的改动可能没存下来。"
+        );
       }
     }, 400);
     return () => clearTimeout(saveTimer.current);
@@ -575,7 +582,11 @@ export default function App() {
       try {
         await window.storage.set(KEY_APPS, JSON.stringify(apps));
       } catch (e) {
-        setToast("设定储存失败，刚才的改动可能没存下来。");
+        setToast(
+          e && e.code === "conflict"
+            ? { text: e.message, tone: "conflict", sticky: true }
+            : "设定储存失败，刚才的改动可能没存下来。"
+        );
       }
     }, 400);
     return () => clearTimeout(appsTimer.current);
@@ -595,11 +606,19 @@ export default function App() {
     return () => clearTimeout(logTimer.current);
   }, [activities, loading]);
 
+  // toast 可以是一个字串（大部分呼叫端都这样用），
+  // 也可以是 { text, tone, sticky } —— sticky 的不会自己消失。
+  const toastInfo = toast
+    ? typeof toast === "string"
+      ? { text: toast, tone: "info", sticky: false }
+      : toast
+    : null;
+
   useEffect(() => {
-    if (!toast) return;
+    if (!toastInfo || toastInfo.sticky) return;
     const t = setTimeout(() => setToast(""), 2600);
     return () => clearTimeout(t);
-  }, [toast]);
+  }, [toast, toastInfo]);
 
   /* ------------------- 唯一的活动纪录写入点 -------------------- */
   const logActivity = useCallback((action, target, description) => {
@@ -919,9 +938,38 @@ export default function App() {
         </button>
       </footer>
 
-      {toast && (
-        <div className="fixed bottom-14 left-1/2 z-50 -translate-x-1/2 rounded bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
-          {toast}
+      {toastInfo && (
+        <div
+          className={cx(
+            "fixed bottom-14 left-1/2 z-50 -translate-x-1/2 rounded px-4 py-2 text-sm shadow-lg",
+            toastInfo.tone === "conflict"
+              ? "flex max-w-xl items-start gap-3 border border-red-300 bg-red-50 text-red-900"
+              : "bg-slate-900 text-white"
+          )}
+        >
+          {toastInfo.tone === "conflict" && (
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+          )}
+          <span>{toastInfo.text}</span>
+          {toastInfo.sticky && (
+            <span className="ml-auto flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded bg-red-700 px-2 py-1 text-xs font-medium text-white hover:bg-red-800"
+              >
+                重新载入
+              </button>
+              <button
+                type="button"
+                onClick={() => setToast("")}
+                className="rounded p-1 text-red-700 hover:bg-red-100"
+                aria-label="关闭"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          )}
         </div>
       )}
     </div>

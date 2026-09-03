@@ -305,6 +305,83 @@ test("两个分页改同一位顾客，第二个存档的丢出冲突错误，�
   assert.equal(final[0].stage, "verifying", "第一个人的改动被盖掉了");
 });
 
+test("冲突讯息讲的是顾客名字与该怎么办，不是 id", async () => {
+  const { env } = setup();
+  await wire(env).storage.set(
+    KEY_MAIN,
+    JSON.stringify({ customers: [uiCustomer({ id: "c1", name: "Nurul Aisyah" })] })
+  );
+
+  const tab1 = wire(env, USER);
+  const tab2 = wire(env, OTHER);
+  const list1 = JSON.parse((await tab1.storage.get(KEY_MAIN)).value).customers;
+  const list2 = JSON.parse((await tab2.storage.get(KEY_MAIN)).value).customers;
+
+  await tab1.storage.set(KEY_MAIN,
+    JSON.stringify({ customers: list1.map((c) => ({ ...c, stage: "verifying" })) }));
+
+  await assert.rejects(
+    () => tab2.storage.set(KEY_MAIN,
+      JSON.stringify({ customers: list2.map((c) => ({ ...c, stage: "closed" })) })),
+    (err) => {
+      // 员工看得懂的：谁被改了、该怎么办
+      assert.match(err.message, /Nurul Aisyah/, "讯息里要有顾客的名字");
+      assert.match(err.message, /重新载入/, "讯息要告诉他该怎么办");
+      assert.doesNotMatch(err.message, /\bc1\b/, "讯息里不该出现内部 id");
+      // 给程式用的：id
+      assert.deepEqual(err.conflicts, ["c1"]);
+      assert.deepEqual(err.conflictNames, ["Nurul Aisyah"]);
+      return true;
+    }
+  );
+});
+
+test("没有名字的顾客，冲突讯息退而用电话，不会露出 id", async () => {
+  const { env } = setup();
+  await wire(env).storage.set(
+    KEY_MAIN,
+    JSON.stringify({ customers: [uiCustomer({ id: "c1", name: "", whatsapp: "+60 12-345 6789" })] })
+  );
+
+  const tab1 = wire(env, USER);
+  const tab2 = wire(env, OTHER);
+  const list1 = JSON.parse((await tab1.storage.get(KEY_MAIN)).value).customers;
+  const list2 = JSON.parse((await tab2.storage.get(KEY_MAIN)).value).customers;
+
+  await tab1.storage.set(KEY_MAIN,
+    JSON.stringify({ customers: list1.map((c) => ({ ...c, stage: "verifying" })) }));
+
+  await assert.rejects(
+    () => tab2.storage.set(KEY_MAIN,
+      JSON.stringify({ customers: list2.map((c) => ({ ...c, stage: "closed" })) })),
+    (err) => {
+      assert.match(err.message, /\+60 12-345 6789/);
+      return true;
+    }
+  );
+});
+
+test("设定冲突的讯息也讲人话，不是「automation」", async () => {
+  const { env } = setup();
+  await wire(env).storage.set(KEY_APPS, JSON.stringify({ automation: { masterEnabled: false } }));
+
+  const tab1 = wire(env, USER);
+  const tab2 = wire(env, OTHER);
+  await tab1.storage.get(KEY_APPS);
+  await tab2.storage.get(KEY_APPS);
+
+  await tab1.storage.set(KEY_APPS, JSON.stringify({ automation: { masterEnabled: true } }));
+  await assert.rejects(
+    () => tab2.storage.set(KEY_APPS, JSON.stringify({ automation: { masterEnabled: false, x: 1 } })),
+    (err) => {
+      assert.equal(err.code, "conflict");
+      assert.match(err.message, /自动化设定/);
+      assert.match(err.message, /重新载入/);
+      return true;
+    }
+  );
+});
+
 test("撞过冲突之后不会自己重试把别人的改动盖掉", async () => {
   const { env } = setup();
   await wire(env).storage.set(KEY_MAIN, JSON.stringify({ customers: [uiCustomer()] }));
