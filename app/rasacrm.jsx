@@ -6,6 +6,8 @@ import {
   Bot,
   Send,
   History,
+  QrCode,
+  RefreshCw,
   Search,
   X,
   Plus,
@@ -778,11 +780,12 @@ export default function App() {
     { id: "ai", label: "AI 助理", icon: Bot },
     { id: "campaign", label: "群发 Campaign", icon: Send },
     { id: "activity", label: "团队活动", icon: History, adminOnly: true },
+    { id: "wa", label: "WhatsApp 连接", icon: QrCode, adminOnly: true },
   ];
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
 
   useEffect(() => {
-    if (page === "activity" && !isAdmin) setPage("overview");
+    if ((page === "activity" || page === "wa") && !isAdmin) setPage("overview");
   }, [page, isAdmin]);
 
   if (authError) {
@@ -922,6 +925,7 @@ export default function App() {
             ) : (
               <Blocked />
             ))}
+          {page === "wa" && (isAdmin ? <WhatsAppLink /> : <Blocked />)}
         </main>
       </div>
 
@@ -1672,6 +1676,193 @@ function NewCustomer({ onClose, onSave }) {
 }
 
 /* ============================== Activity =========================== */
+
+/* ========================= WhatsApp 连接 ========================= */
+
+/**
+ * 扫码页。只有 admin 看得到（导航已经过滤，后端也会再挡一次）。
+ *
+ * secret 不经过浏览器：这里只打自己家的 /api/wa/qr，Worker 拿着 secret
+ * 去跟桥接机要，我们只拿到结果 —— QR 图片或状态 JSON。
+ */
+function WhatsAppLink() {
+  const [state, setState] = useState({ kind: "loading" });
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const objectUrl = useRef(null);
+
+  /** 换掉旧的 blob URL，顺手释放，不然每 20 秒漏一个 */
+  const setQrBlob = useCallback((blob) => {
+    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+    objectUrl.current = URL.createObjectURL(blob);
+    setState({ kind: "qr", src: objectUrl.current });
+  }, []);
+
+  const poll = useCallback(async () => {
+    try {
+      const res = await fetch("/api/wa/qr", { cache: "no-store" });
+      const type = res.headers.get("content-type") || "";
+
+      if (res.ok && type.startsWith("image/")) {
+        setQrBlob(await res.blob());
+        return;
+      }
+
+      const body = await res.json().catch(() => ({}));
+      if (body.connected) {
+        setState({ kind: "connected", phone: body.phone });
+      } else if (body.waiting) {
+        setState({ kind: "waiting", detail: body.detail, state: body.state });
+      } else {
+        setState({
+          kind: "error",
+          detail: body.detail || body.error || `HTTP ${res.status}`,
+          error: body.error,
+        });
+      }
+    } catch (e) {
+      setState({ kind: "error", detail: String(e.message || e) });
+    }
+  }, [setQrBlob]);
+
+  // QR 会过期，桥接机会一直换新的 —— 所以要定期重抓
+  useEffect(() => {
+    poll();
+    const t = setInterval(poll, 20000);
+    return () => {
+      clearInterval(t);
+      if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+    };
+  }, [poll]);
+
+  async function reconnect() {
+    setBusy(true);
+    setConfirming(false);
+    try {
+      const res = await fetch("/api/wa/reconnect", { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setState({ kind: "error", detail: body.detail || body.error || `HTTP ${res.status}` });
+      } else {
+        setState({ kind: "waiting", detail: "已要求重新连结，等待新的 QR…" });
+        setTimeout(poll, 2000);
+      }
+    } catch (e) {
+      setState({ kind: "error", detail: String(e.message || e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const badge = {
+    loading: ["读取中…", "bg-slate-100 text-slate-600"],
+    connected: ["已连线", "bg-emerald-100 text-emerald-800"],
+    qr: ["等待扫码", "bg-amber-100 text-amber-800"],
+    waiting: ["等待扫码", "bg-amber-100 text-amber-800"],
+    error: ["未连线", "bg-rose-100 text-rose-800"],
+  }[state.kind] || ["未连线", "bg-rose-100 text-rose-800"];
+
+  return (
+    <div className="mx-auto max-w-2xl">
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-lg font-semibold">WhatsApp 连接</h1>
+        <span className={`rounded px-2 py-0.5 text-xs font-medium ${badge[1]}`}>{badge[0]}</span>
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-6">
+        {state.kind === "loading" && (
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> 正在向桥接机确认状态…
+          </div>
+        )}
+
+        {state.kind === "connected" && (
+          <div className="text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100">
+              <Check className="h-6 w-6 text-emerald-700" />
+            </div>
+            <div className="font-medium text-slate-900">已连线</div>
+            <div className="mt-1 font-mono text-sm text-slate-600">{state.phone || "（号码未回报）"}</div>
+            <p className="mt-3 text-xs text-slate-500">
+              进来的讯息会自动写进 CRM。重启桥接机不需要重新扫码。
+            </p>
+          </div>
+        )}
+
+        {state.kind === "qr" && (
+          <div className="text-center">
+            <img
+              src={state.src}
+              alt="WhatsApp 登入 QR"
+              width={320}
+              height={320}
+              className="mx-auto rounded border border-slate-200"
+            />
+            <p className="mt-3 text-sm text-slate-600">
+              手机 WhatsApp → 设定 → 已连结的装置 → 连结装置，扫这个码
+            </p>
+            <p className="mt-1 text-xs text-slate-400">QR 会过期，这一页每 20 秒自动换新的</p>
+          </div>
+        )}
+
+        {state.kind === "waiting" && (
+          <div className="flex items-center gap-2 text-sm text-slate-600">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {state.detail || "桥接机还没产生 QR，稍等…"}
+          </div>
+        )}
+
+        {state.kind === "error" && (
+          <div className="rounded border border-rose-200 bg-rose-50 p-4">
+            <div className="flex items-center gap-2 font-medium text-rose-900">
+              <AlertTriangle className="h-4 w-4" /> 连不上桥接机
+            </div>
+            <p className="mt-1 break-words text-sm text-rose-800">{state.detail}</p>
+            {state.error === "bridge_not_configured" && (
+              <p className="mt-2 text-xs text-rose-700">
+                Worker 还没设定 WA_BRIDGE_URL / WA_BRIDGE_SECRET。
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 rounded border border-slate-200 bg-white p-4">
+        <div className="text-sm font-medium text-slate-900">重新连结</div>
+        <p className="mt-1 text-xs text-slate-500">
+          会中断目前的连线并要求重新扫码。手机不在手边就先不要按。
+        </p>
+
+        {!confirming ? (
+          <button
+            onClick={() => setConfirming(true)}
+            disabled={busy}
+            className="mt-3 inline-flex items-center gap-1.5 rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> 重新连结
+          </button>
+        ) : (
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-sm text-rose-700">确定要断线并重新扫码？</span>
+            <button
+              onClick={reconnect}
+              disabled={busy}
+              className="rounded bg-rose-600 px-3 py-1.5 text-sm text-white hover:bg-rose-700 disabled:opacity-50"
+            >
+              {busy ? "处理中…" : "确定，断线重扫"}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+            >
+              取消
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Activity({ activities }) {
   const [actor, setActor] = useState("all");

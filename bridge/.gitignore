@@ -1,0 +1,10 @@
+node_modules/
+
+# WhatsApp 的登入状态 —— 里面是这台机器的 session 凭证。
+# commit 上去等于把 WhatsApp 帐号的钥匙公开，两种写法都挡。
+.auth
+.auth/
+*.auth
+.env
+.env.*
+!.env.example

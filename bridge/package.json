@@ -1,0 +1,19 @@
+{
+  "name": "rasa-wa-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp 桥接机：常驻主机上跑 Baileys，把讯息转给 rasa-crm Worker",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "qrcode": "^1.5.4"
+  },
+  "packageManager": "npm@10.9.7"
+}
