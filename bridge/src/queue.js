@@ -32,7 +32,14 @@ export function createQueue({
     // 「显示成功、资料没进去」。
     skippedByWorker: 0,
     lastWorkerReply: null,
+    // 最近几笔被略过的明细。原因本来只写进日志，但 Railway 的日志 API 会
+    // 丢行 —— 今天就发生过「知道有一则被拒收，却查不到为什么」。
+    // 在一个日志不可靠的平台上，只把关键资讯写日志等于没写。
+    lastSkips: [],
   };
+
+/** 留最近这么多笔就好，够查问题，也不会让 /health 变得难读 */
+const MAX_SKIPS_KEPT = 10;
   let running = false;
   let stopped = false;
 
@@ -136,6 +143,13 @@ export function createQueue({
       const skipped = (reply.results || []).filter((r) => r.status === "skipped");
       if (skipped.length) {
         stats.skippedByWorker += skipped.length;
+        const at = new Date().toISOString();
+        // 新的放前面，旧的挤掉 —— 查问题时看的是最近发生什么
+        stats.lastSkips = [
+          ...skipped.map((r) => ({ at, id: r.id ?? null, reason: r.reason ?? null })),
+          ...stats.lastSkips,
+        ].slice(0, MAX_SKIPS_KEPT);
+
         log.error("worker_skipped_messages", {
           count: skipped.length,
           // 逐则的原因，这是判断「为什么没进 D1」唯一有用的东西

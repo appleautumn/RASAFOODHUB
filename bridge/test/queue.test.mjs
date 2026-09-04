@@ -254,3 +254,48 @@ test("全部收录时 skippedByWorker 保持 0", async () => {
   assert.equal(q.stats().skippedByWorker, 0);
   assert.equal(q.stats().lastWorkerReply.stored, 1);
 });
+
+/* ============ 略过的原因要留在 stats 里，不能只写日志 ============ */
+
+/**
+ * Railway 的日志 API 会丢行 —— 曾经发生「知道有一则被拒收，却查不到原因」。
+ * 所以原因要留在 /health 读得到的地方。
+ */
+
+test("被略过的明细会留在 lastSkips 里，带 id 与原因", async () => {
+  const { q } = make({ onFetch: () => workerReply({
+    ok: true, received: 2, stored: 0, duplicate: 0, skipped: 2,
+    results: [
+      { status: "skipped", id: "A", reason: "bad_timestamp" },
+      { status: "skipped", id: "B", reason: "bad_jid" },
+    ],
+  }) });
+  q.push(msg("A")); q.push(msg("B"));
+  await q.drainOnce();
+
+  const skips = q.stats().lastSkips;
+  assert.equal(skips.length, 2);
+  assert.deepEqual(skips.map((s) => `${s.id}:${s.reason}`), ["A:bad_timestamp", "B:bad_jid"]);
+  assert.ok(skips[0].at, "要记时间，不然不知道是什么时候的事");
+});
+
+test("只留最近 10 笔，新的在前面", async () => {
+  const { q } = make({ onFetch: () => workerReply({
+    ok: true, results: [{ status: "skipped", id: `M${Date.now()}`, reason: "bad_timestamp" }],
+  }) });
+
+  for (let i = 0; i < 14; i++) {
+    q.push(msg(`M${i}`));
+    await q.drainOnce();
+  }
+  assert.equal(q.stats().lastSkips.length, 10, "超过上限要挤掉旧的");
+});
+
+test("全部收录时 lastSkips 保持空的", async () => {
+  const { q } = make({ onFetch: () => workerReply({
+    ok: true, received: 1, stored: 1, skipped: 0, results: [{ status: "stored", id: "A" }],
+  }) });
+  q.push(msg("A"));
+  await q.drainOnce();
+  assert.deepEqual(q.stats().lastSkips, []);
+});
