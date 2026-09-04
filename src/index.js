@@ -8,7 +8,7 @@ import {
 } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
 import { handleApi, json } from "./api.js";
-import { handleWhatsApp } from "./whatsapp.js";
+import { handleWhatsApp, handleWhatsAppAdmin } from "./whatsapp.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -251,6 +251,14 @@ async function serveApp(request, env) {
   });
 }
 
+/* --------------------------- WhatsApp 路由 --------------------------- */
+
+/** 桥接机（机器）打的：验 X-Bridge-Secret，不需要使用者身分 */
+const BRIDGE_ROUTES = new Set(["/api/wa/status", "/api/wa/webhook", "/api/wa/send"]);
+
+/** 「WhatsApp 连接」页（人）打的：走 Access 使用者身分，而且只有 admin */
+const WA_ADMIN_ROUTES = new Set(["/api/wa/qr", "/api/wa/reconnect"]);
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -258,10 +266,15 @@ export default {
     // 诊断端点：不挡，方便你自己检查设定
     if (url.pathname === "/api/authcheck") return handleAuthcheck(request, env);
 
-    // WhatsApp 桥接：机器对机器，验的是共用 secret 而不是使用者身分，
+    // WhatsApp 桥接的**机器**端点：验的是共用 secret 而不是使用者身分，
     // 所以走在 authenticate() 前面 —— 桥接机没有浏览器、拿不到 OTP。
-    // WA_BRIDGE_SECRET 没设定时这一整组端点回 503，等于不存在。
-    if (url.pathname.startsWith("/api/wa/")) return handleWhatsApp(request, env, url);
+    // WA_BRIDGE_SECRET 没设定时这一整组回 503，等于不存在。
+    //
+    // ⚠️ 这里刻意用明确列举，不是 startsWith("/api/wa/")。同一个前缀下面
+    //    同时有「机器走 secret」和「人走 Access + admin」两种端点，前缀比对
+    //    一旦写错边界，就会变成桥接端点对使用者开放、或管理端点对拿到
+    //    secret 的人开放。列举写死，加错的成本会立刻反映在测试上。
+    if (BRIDGE_ROUTES.has(url.pathname)) return handleWhatsApp(request, env, url);
 
     const auth = await authenticate(request, env);
     if (!auth.ok) {
@@ -286,6 +299,15 @@ export default {
       if (user.role !== "admin") {
         return json({ ok: false, error: "forbidden", detail: "需要 admin 角色" }, 403);
       }
+    }
+
+    // 「WhatsApp 连接」页的两条。跟「团队活动」同一个等级：只有 admin。
+    // 前端不显示这一页只是体贴，真正的把关在这里 —— staff 直接打 API 一样挡。
+    if (WA_ADMIN_ROUTES.has(url.pathname)) {
+      if (user.role !== "admin") {
+        return json({ ok: false, error: "forbidden", detail: "需要 admin 角色" }, 403);
+      }
+      return handleWhatsAppAdmin(request, env, url);
     }
 
     // CRM 的资料读写。资源导向的 REST，筛选与排序在 SQL 里做，

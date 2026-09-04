@@ -13,6 +13,10 @@ import {
 
 const SECRET = "bridge-secret-for-tests";
 
+// wrangler 的 [define] 编译期常数。正式产物固定 false，测试里也一样 ——
+// 本机开发身分不该在这些测试里生效。
+globalThis.__ALLOW_DEV_IDENTITY__ = false;
+
 const env = (db, overrides = {}) => ({
   DB: db,
   WA_BRIDGE_SECRET: SECRET,
@@ -356,4 +360,173 @@ test("/api/wa/send 对不存在的顾客回 404", async () => {
     env(db)
   );
   assert.equal(res.status, 404);
+});
+
+/* ================== 「WhatsApp 连接」页的管理端点 ================== */
+
+/**
+ * 这两条走 Access 使用者身分，不是 X-Bridge-Secret。
+ * 测试要用带 JWT 的请求，所以借 worker.test.mjs 那套签章工具。
+ */
+
+const ADMIN = "admin@rasafoodhub.com";
+const STAFF = "staff@rasafoodhub.com";
+
+const KID = "wa-admin-kid";
+const TEAM = "rasafoodhub.cloudflareaccess.com";
+const AUD = "test-aud-tag";
+
+const pair = await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+  true,
+  ["sign", "verify"]
+);
+const pubJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+const jwksBody = JSON.stringify({ keys: [{ kty: "RSA", alg: "RS256", use: "sig", kid: KID, n: pubJwk.n, e: pubJwk.e }] });
+
+const b64 = (o) => Buffer.from(new TextEncoder().encode(JSON.stringify(o))).toString("base64url");
+
+async function jwtFor(email) {
+  const now = Math.floor(Date.now() / 1000);
+  const input = `${b64({ alg: "RS256", kid: KID, typ: "JWT" })}.${b64({
+    iss: `https://${TEAM}`, aud: [AUD], email, iat: now - 5, exp: now + 3600,
+  })}`;
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(input));
+  return `${input}.${Buffer.from(new Uint8Array(sig)).toString("base64url")}`;
+}
+
+/** db 里放好 admin 与 staff，并把 fetch 换成可控的替身 */
+function adminEnv(db, { bridge, url = "https://bridge.test", secret = "s3cret" } = {}) {
+  db._exec(`INSERT OR REPLACE INTO users (email, name, role, is_active) VALUES
+    ('${ADMIN}', 'Admin', 'admin', 1), ('${STAFF}', 'Staff', 'staff', 1)`);
+
+  globalThis.fetch = async (target, init) => {
+    // Access 验证会去抓 JWKS
+    if (String(target).includes("/cdn-cgi/access/certs")) return new Response(jwksBody);
+    return bridge(String(target), init);
+  };
+
+  return { ...env(db), ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, WA_BRIDGE_URL: url, WA_BRIDGE_SECRET: secret };
+}
+
+const asUser = async (path, email, method = "GET") =>
+  new Request(`https://x.workers.dev${path}`, {
+    method,
+    headers: { "Cf-Access-Jwt-Assertion": await jwtFor(email) },
+  });
+
+test("staff 打 /api/wa/qr 会被挡，而且不会去碰桥接机", async () => {
+  const db = createTestDb();
+  let touched = false;
+  const e = adminEnv(db, { bridge: async () => { touched = true; return new Response("", { status: 200 }); } });
+
+  const res = await worker.fetch(await asUser("/api/wa/qr", STAFF), e);
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).error, "forbidden");
+  assert.equal(touched, false, "staff 的请求不该转发到桥接机");
+});
+
+test("staff 打 /api/wa/reconnect 一样被挡", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, { bridge: async () => new Response("", { status: 200 }) });
+  const res = await worker.fetch(await asUser("/api/wa/reconnect", STAFF, "POST"), e);
+  assert.equal(res.status, 403);
+});
+
+test("admin 拿得到 QR 图片，而且 secret 不会外流给浏览器", async () => {
+  const db = createTestDb();
+  let seenHeaders = null;
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const e = adminEnv(db, {
+    bridge: async (target, init) => {
+      seenHeaders = init?.headers || {};
+      assert.match(target, /\/qr$/);
+      return new Response(png, { status: 200, headers: { "content-type": "image/png" } });
+    },
+  });
+
+  const res = await worker.fetch(await asUser("/api/wa/qr", ADMIN), e);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "image/png");
+  assert.equal(res.headers.get("cache-control"), "no-store", "QR 会过期，不能被快取");
+
+  // Worker 有带 secret 去问桥接机
+  assert.equal(seenHeaders["X-Bridge-Secret"], "s3cret");
+  // 但回给浏览器的东西完全不含 secret
+  const body = Buffer.from(await res.arrayBuffer()).toString("utf8");
+  assert.ok(!body.includes("s3cret"), "secret 外流到浏览器了");
+  for (const [, v] of res.headers) assert.ok(!String(v).includes("s3cret"), "secret 出现在回应标头");
+});
+
+test("桥接机说已连线时，回 JSON 带号码而不是图片", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, {
+    bridge: async () =>
+      new Response(JSON.stringify({ ok: false, error: "already_connected", phone: "60123456789" }), {
+        status: 409, headers: { "content-type": "application/json" },
+      }),
+  });
+  const body = await (await worker.fetch(await asUser("/api/wa/qr", ADMIN), e)).json();
+  assert.equal(body.connected, true);
+  assert.equal(body.phone, "60123456789");
+});
+
+test("QR 还没产生时回「等待中」，不是错误", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, {
+    bridge: async () =>
+      new Response(JSON.stringify({ ok: false, error: "qr_not_ready", state: "connecting" }), {
+        status: 503, headers: { "content-type": "application/json" },
+      }),
+  });
+  const res = await worker.fetch(await asUser("/api/wa/qr", ADMIN), e);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.connected, false);
+  assert.equal(body.waiting, true);
+  assert.equal(body.state, "connecting");
+});
+
+test("桥接机连不上时回 502，讲清楚是桥接机的问题", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, { bridge: async () => { throw new Error("connect ECONNREFUSED"); } });
+  const res = await worker.fetch(await asUser("/api/wa/qr", ADMIN), e);
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, "bridge_unreachable");
+});
+
+test("没设 WA_BRIDGE_URL 时回 503，跟机器端同一条规则", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, { bridge: async () => new Response("", { status: 200 }) });
+  delete e.WA_BRIDGE_URL;
+  const res = await worker.fetch(await asUser("/api/wa/qr", ADMIN), e);
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, "bridge_not_configured");
+});
+
+test("reconnect 会带上二次确认参数送给桥接机", async () => {
+  const db = createTestDb();
+  let sent = null;
+  const e = adminEnv(db, {
+    bridge: async (target, init) => {
+      assert.match(target, /\/reset-auth$/);
+      sent = JSON.parse(init.body);
+      return new Response(JSON.stringify({ ok: true, reset: true, state: "waiting_qr" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const body = await (await worker.fetch(await asUser("/api/wa/reconnect", ADMIN, "POST"), e)).json();
+  assert.equal(body.ok, true);
+  assert.equal(body.reset, true);
+  assert.equal(sent.confirm, "i-mean-it", "少了防呆参数，桥接机会拒绝");
+});
+
+test("管理端点不吃 X-Bridge-Secret —— 拿到 secret 也进不来", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, { bridge: async () => new Response("", { status: 200 }) });
+  // 没有 Access JWT，只带机器用的 secret
+  const req = new Request("https://x.workers.dev/api/wa/qr", { headers: { "X-Bridge-Secret": "s3cret" } });
+  const res = await worker.fetch(req, e);
+  assert.equal(res.status, 401, "管理端点必须要求使用者身分");
 });

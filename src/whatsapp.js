@@ -336,6 +336,121 @@ async function checkSecret(request, env) {
   return { ok: true };
 }
 
+/* ====================== 人用的管理端点 ====================== */
+
+/**
+ * 这两条给「WhatsApp 连接」页用，呼叫的是**人**不是机器：
+ * 走 Cloudflare Access 使用者身分 + users 表的 admin 判定，不验 X-Bridge-Secret。
+ *
+ * secret 不经过浏览器 —— Worker 拿着 WA_BRIDGE_SECRET 去跟桥接机要，
+ * 浏览器只拿到结果（QR 图片或状态 JSON）。
+ */
+
+/** 打桥接机。回 { ok, response } 或 { ok:false, response:错误回应 } */
+async function callBridge(env, path, init = {}) {
+  const base = String(env.WA_BRIDGE_URL || "").trim().replace(/\/+$/, "");
+  const secret = String(env.WA_BRIDGE_SECRET || "").trim();
+
+  // 跟机器端同一条规则：没设定就是死的，不会「没设定 = 全开」
+  if (!base || !secret) {
+    return {
+      ok: false,
+      response: jsonResponse(
+        {
+          ok: false,
+          error: "bridge_not_configured",
+          detail: "WA_BRIDGE_URL 或 WA_BRIDGE_SECRET 没设定，桥接机还没接上。",
+          hint: "npx wrangler secret put WA_BRIDGE_URL / WA_BRIDGE_SECRET",
+        },
+        503
+      ),
+    };
+  }
+
+  try {
+    const res = await fetch(`${base}${path}`, {
+      ...init,
+      headers: { ...(init.headers || {}), "X-Bridge-Secret": secret },
+    });
+    return { ok: true, res };
+  } catch (err) {
+    // 桥接机没开、网址错、主机重启中都会走到这里
+    return {
+      ok: false,
+      response: jsonResponse(
+        {
+          ok: false,
+          error: "bridge_unreachable",
+          detail: String(err?.message || err).slice(0, 200),
+        },
+        502
+      ),
+    };
+  }
+}
+
+export async function handleWhatsAppAdmin(request, env, url) {
+  const path = url.pathname;
+
+  // 回 QR 图片，或「已经连上了」。页面每 20 秒左右打一次这条。
+  if (path === "/api/wa/qr" && request.method === "GET") {
+    const call = await callBridge(env, "/qr");
+    if (!call.ok) return call.response;
+    const { res } = call;
+
+    if (res.status === 200) {
+      // 原样把 PNG 转给浏览器。QR 会过期，绝对不能被快取。
+      return new Response(res.body, {
+        status: 200,
+        headers: {
+          "content-type": res.headers.get("content-type") || "image/png",
+          "cache-control": "no-store",
+        },
+      });
+    }
+
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      // 桥接机说已经连上了 —— 页面看到这个就切成「已连线」并显示号码
+      return jsonResponse({ ok: true, connected: true, phone: body.phone ?? null });
+    }
+    if (res.status === 503) {
+      return jsonResponse({
+        ok: true,
+        connected: false,
+        waiting: true,
+        state: body.state ?? "unknown",
+        detail: "桥接机还没产生 QR，稍等一下再试。",
+      });
+    }
+    return jsonResponse(
+      { ok: false, error: "bridge_error", status: res.status, detail: body.error ?? null },
+      502
+    );
+  }
+
+  // 触发重新扫码。会断线，所以桥接机那端还要一个二次确认参数。
+  if (path === "/api/wa/reconnect" && request.method === "POST") {
+    const call = await callBridge(env, "/reset-auth", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: "i-mean-it" }),
+    });
+    if (!call.ok) return call.response;
+
+    const body = await call.res.json().catch(() => ({}));
+    if (!call.res.ok) {
+      return jsonResponse(
+        { ok: false, error: "reset_failed", status: call.res.status, detail: body.error ?? null },
+        502
+      );
+    }
+    return jsonResponse({ ok: true, reset: true, state: body.state ?? "waiting_qr" });
+  }
+
+  return jsonResponse({ ok: false, error: "not_found" }, 404);
+}
+
 /* ============================ 路由 ============================ */
 
 async function readJson(request) {
