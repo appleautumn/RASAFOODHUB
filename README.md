@@ -66,6 +66,59 @@ npm run deploy  # build + wrangler deploy
 
 `window.storage` 的介面形状完全没变，页面不知道底下换了引擎。
 
+## 改资料库结构：怎么安全地跑一次 migration
+
+**schema 改动不接进自动部署，一律手动跑。**
+
+理由是可逆程度不同：程式部署错了，回滚版本几秒钟；schema 改错了要还原备份，
+而这期间写进来的资料可能已经坏掉。两件事不该绑同一个触发。
+
+### 规矩
+
+- 改结构一律**新增**一支 `migrations/NNNN_名字.sql`，编号接续，不要回头改已经跑过的
+  （改了也不会重跑，只会让正式库跟 repo 悄悄对不上）
+- 档名照 `wrangler d1 migrations create` 产生的格式：四位数字 + 底线 + 小写名字
+- `schema.sql` 是「现在的完整结构」，`migrations/` 是「怎么一步步走到现在」，
+  两边要讲同一件事
+
+### 步骤
+
+```bash
+# 1. 先看有哪些还没套用
+npm run db:migrate:list
+
+# 2. 本机先跑一次，确认 SQL 没问题
+npm run db:migrate:local
+npm test
+
+# 3. 正式库
+npm run db:migrate
+```
+
+`wrangler d1 migrations apply` 的行为（官方文件写明的）：
+
+- 非互动环境会跳过确认步骤
+- **套用前会先抓一份备份**
+- 某一支失败会回滚那一支，先前成功的保留
+
+### 跑之前自己检查这几件事
+
+1. **这支是新增的，还是改了旧的？** 改旧的就停下来，改成新增一支
+2. **有没有破坏性语句？** `DROP TABLE`、`DROP COLUMN`、没有 `WHERE` 的
+   `DELETE` / `UPDATE`。有的话先想清楚：资料删掉就没了，备份是最后一道防线不是第一道
+3. **能不能重跑？** 用 `CREATE TABLE IF NOT EXISTS`、`INSERT OR IGNORE` 这类写法，
+   同一支跑两次结果要一样
+
+### 目前的状态（2026-09）
+
+正式库的两张原始表和关联式那批，都是**用后台 Console 手动跑的**，
+所以 `d1_migrations` 里没有对应纪录。
+
+`0001` 和 `0002` 都是 `CREATE TABLE IF NOT EXISTS`，之后真的跑
+`db:migrate` 会是 no-op，只是把纪录补登上去 —— 不会出事，但**别以为纪录已经在那里**。
+
+---
+
 ## 为什么不信 `Cf-Access-Authenticated-User-Email`
 
 Access 会带两个东西进来：
