@@ -20,8 +20,11 @@ export function createQueue({
   headers,
   rssBytes = () => process.memoryUsage.rss(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  // 落地存放。预设是个什么都不做的替身，测试不必碰磁碟。
+  spool = { load: () => [], save: () => {}, enabled: false },
 }) {
-  const items = [];
+  // 开机先把上次没送完的接回来，再接受新的
+  const items = spool.load();
   const stats = {
     pushed: 0, sent: 0, failed: 0, dropped: 0, batches: 0, lastError: null,
     // Worker 收下了、但自己判定不收录的则数（时间戳判读不出、JID 不合法…）。
@@ -52,6 +55,7 @@ export function createQueue({
     }
     items.push(item);
     stats.pushed += 1;
+    spool.save(items);
     return true;
   }
 
@@ -125,6 +129,10 @@ export function createQueue({
         skipped: reply.skipped ?? null,
       };
 
+      // 这批已经确定进 Worker 了，从磁碟上拿掉，重启才不会重送一次。
+      // （重送本身是安全的，但没必要。）
+      spool.save(items);
+
       const skipped = (reply.results || []).filter((r) => r.status === "skipped");
       if (skipped.length) {
         stats.skippedByWorker += skipped.length;
@@ -140,6 +148,7 @@ export function createQueue({
       // 推不出去就放回队首重试。Worker 那边靠 platform_msg_id 的 UNIQUE
       // 挡重复，所以重送是安全的 —— 宁可重送，不要漏送。
       items.unshift(...batch);
+      spool.save(items);
       log.warn("drain_failed", { queueLength: items.length, error: stats.lastError });
       return { sent: 0, waitMs: config.drainIntervalMs * config.rssBackoffFactor };
     }
@@ -185,6 +194,6 @@ export function createQueue({
     get length() {
       return items.length;
     },
-    stats: () => ({ ...stats, queueLength: items.length }),
+    stats: () => ({ ...stats, queueLength: items.length, spooled: spool.enabled }),
   };
 }

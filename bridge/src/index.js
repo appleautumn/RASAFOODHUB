@@ -7,6 +7,7 @@
 
 import { readConfig, workerHeaders } from "./config.js";
 import { createQueue } from "./queue.js";
+import { createSpool } from "./spool.js";
 import { createWhatsApp } from "./wa.js";
 import { createBridgeServer } from "./server.js";
 import { log } from "./log.js";
@@ -17,7 +18,9 @@ log.info("boot", { node: process.version, pid: process.pid });
 
 const config = readConfig();
 
-const queue = createQueue({ config, headers: () => workerHeaders(config) });
+// 佇列落地在持久磁碟上，重启才不会把已收到、还没送出的讯息弄丢
+const spool = createSpool(config.spoolPath);
+const queue = createQueue({ config, headers: () => workerHeaders(config), spool });
 const wa = createWhatsApp({ config, queue });
 const server = createBridgeServer({ config, wa, queue });
 
@@ -36,6 +39,8 @@ server.listen(config.port, () => {
     address: JSON.stringify(server.address()),
     workerUrl: config.workerUrl,
     authDir: config.authDir,
+    spoolPath: config.spoolPath,
+    restoredFromSpool: queue.length,
     hasServiceToken: Boolean(config.accessClientId && config.accessClientSecret),
   });
 });
