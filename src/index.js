@@ -257,7 +257,7 @@ async function serveApp(request, env) {
 const BRIDGE_ROUTES = new Set(["/api/wa/status", "/api/wa/webhook", "/api/wa/send"]);
 
 /** 「WhatsApp 连接」页（人）打的：走 Access 使用者身分，而且只有 admin */
-const WA_ADMIN_ROUTES = new Set(["/api/wa/qr", "/api/wa/reconnect"]);
+const WA_ADMIN_ROUTES = new Set(["/api/wa/qr", "/api/wa/reconnect", "/api/wa/test-send"]);
 
 export default {
   async fetch(request, env) {

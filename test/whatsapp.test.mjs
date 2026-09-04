@@ -326,33 +326,6 @@ test("/api/wa/status 这阶段回 not_connected", async () => {
   assert.equal(body.state, "not_connected");
 });
 
-test("/api/wa/send 只写纪录，不宣称已送出", async () => {
-  const db = createTestDb();
-  db._exec(`INSERT INTO customers (id, name, phone, phone_raw, updated_at)
-            VALUES ('cust-1', '旧客', '60123456789', '012-3456789', '2026-01-01T00:00:00.000Z')`);
-
-  const res = await worker.fetch(
-    post("/api/wa/send", { customerId: "cust-1", body: "在吗", actor: "staff@rasafoodhub.com" }, withSecret()),
-    env(db)
-  );
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.queued, true);
-  assert.equal(body.delivered, false, "这阶段不可以宣称已送达");
-
-  const m = db._row("SELECT * FROM messages WHERE direction = 'out'");
-  assert.equal(m.body, "在吗");
-  assert.equal(m.author, "staff@rasafoodhub.com", "谁按的送出要留痕");
-});
-
-test("/api/wa/send 没指明 actor 就标成系统", async () => {
-  const db = createTestDb();
-  db._exec(`INSERT INTO customers (id, name, phone, phone_raw, updated_at)
-            VALUES ('cust-1', 'x', '60123456789', '012', '2026-01-01T00:00:00.000Z')`);
-  await worker.fetch(post("/api/wa/send", { customerId: "cust-1", body: "hi" }, withSecret()), env(db));
-  assert.equal(db._row("SELECT author FROM messages").author, SYSTEM_ACTOR);
-});
-
 test("/api/wa/send 对不存在的顾客回 404", async () => {
   const db = createTestDb();
   const res = await worker.fetch(
@@ -529,4 +502,160 @@ test("管理端点不吃 X-Bridge-Secret —— 拿到 secret 也进不来", asy
   const req = new Request("https://x.workers.dev/api/wa/qr", { headers: { "X-Bridge-Secret": "s3cret" } });
   const res = await worker.fetch(req, e);
   assert.equal(res.status, 401, "管理端点必须要求使用者身分");
+});
+
+/* ================== /api/wa/send：真的送出（阶段 B） ================== */
+
+/** 机器端点 + 已设定桥接机。fetch 被换掉，不会真的连出去。 */
+function sendEnv(db, bridge) {
+  globalThis.fetch = async (target, init) => bridge(String(target), init);
+  return { ...env(db), WA_BRIDGE_URL: "https://bridge.test", WA_BRIDGE_SECRET: SECRET };
+}
+
+const bridgeOk = (id = "3EB0ABC") => async () =>
+  new Response(JSON.stringify({ ok: true, id, jid: "60123@s.whatsapp.net" }), {
+    status: 200, headers: { "content-type": "application/json" },
+  });
+
+const seedCustomer = (db, over = {}) => {
+  const c = { id: "cust-1", phone: "60123456789", phone_raw: "012-3456789", merged_into: null, ...over };
+  db._exec(`INSERT INTO customers (id, name, phone, phone_raw, updated_at, merged_into)
+            VALUES ('${c.id}', 'x', '${c.phone}', '${c.phone_raw}',
+                    '2026-01-01T00:00:00.000Z', ${c.merged_into ? `'${c.merged_into}'` : "NULL"})`);
+  return c;
+};
+
+test("送出时会把顾客号码交给桥接机，并带上 secret", async () => {
+  const db = createTestDb();
+  seedCustomer(db);
+  let seen = null;
+  const e = sendEnv(db, async (target, init) => {
+    seen = { target, headers: init.headers, body: JSON.parse(init.body) };
+    return bridgeOk()();
+  });
+
+  const res = await worker.fetch(
+    post("/api/wa/send", { customerId: "cust-1", body: "在吗" }, withSecret()), e
+  );
+  assert.equal(res.status, 200);
+  assert.match(seen.target, /\/send$/);
+  assert.equal(seen.body.to, "60123456789", "要送到正规化后的号码");
+  assert.equal(seen.body.body, "在吗");
+  assert.equal(seen.headers["X-Bridge-Secret"], SECRET);
+});
+
+test("送出成功后回 delivered:true，并用平台的 message id 记录", async () => {
+  const db = createTestDb();
+  seedCustomer(db);
+  const e = sendEnv(db, bridgeOk("3EB0XYZ"));
+
+  const body = await (await worker.fetch(
+    post("/api/wa/send", { customerId: "cust-1", body: "hi", actor: "staff@rasafoodhub.com" }, withSecret()), e
+  )).json();
+
+  assert.equal(body.delivered, true);
+  assert.equal(body.platformMsgId, "3EB0XYZ");
+
+  const m = db._row("SELECT * FROM messages WHERE direction = 'out'");
+  assert.equal(m.id, "wa-3EB0XYZ", "id 要用平台的 id 推出来");
+  assert.equal(m.platform_msg_id, "3EB0XYZ");
+  assert.equal(m.author, "staff@rasafoodhub.com", "谁按的送出要留痕");
+});
+
+test("平台把自己送的讯息推回来时不会变成两笔", async () => {
+  const db = createTestDb();
+  seedCustomer(db);
+  const e = sendEnv(db, bridgeOk("3EB0SAME"));
+
+  await worker.fetch(post("/api/wa/send", { customerId: "cust-1", body: "hi" }, withSecret()), e);
+  // 平台稍后以 fromMe 的形式推回同一则
+  await ingestMessage(db, msg({ id: "3EB0SAME", fromMe: true, from: "60123456789@s.whatsapp.net", text: "hi" }));
+
+  assert.equal(db._rows("SELECT id FROM messages").length, 1, "同一则被记成两笔了");
+});
+
+test("没设定桥接机时回 503，而且不写纪录", async () => {
+  const db = createTestDb();
+  seedCustomer(db);
+  const e = sendEnv(db, bridgeOk());
+  delete e.WA_BRIDGE_URL;
+
+  const res = await worker.fetch(post("/api/wa/send", { customerId: "cust-1", body: "hi" }, withSecret()), e);
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).error, "bridge_not_configured");
+  assert.equal(db._rows("SELECT * FROM messages").length, 0, "没送出去就不该留下已送出的纪录");
+});
+
+test("桥接机送失败时回 502，而且不写纪录", async () => {
+  const db = createTestDb();
+  seedCustomer(db);
+  const e = sendEnv(db, async () =>
+    new Response(JSON.stringify({ ok: false, error: "send_failed", detail: "还没连线" }), {
+      status: 503, headers: { "content-type": "application/json" },
+    }));
+
+  const res = await worker.fetch(post("/api/wa/send", { customerId: "cust-1", body: "hi" }, withSecret()), e);
+  assert.equal(res.status, 502);
+  assert.equal(db._rows("SELECT * FROM messages").length, 0, "送失败却留下纪录，之后没人查得出真相");
+});
+
+test("只有隐藏 ID 的顾客送不了，回 409 并说明原因", async () => {
+  const db = createTestDb();
+  seedCustomer(db, { id: "cust-lid", phone: "", phone_raw: "123456@lid" });
+  let touched = false;
+  const e = sendEnv(db, async () => { touched = true; return bridgeOk()(); });
+
+  const res = await worker.fetch(post("/api/wa/send", { customerId: "cust-lid", body: "hi" }, withSecret()), e);
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).error, "customer_has_no_phone");
+  assert.equal(touched, false, "没号码就不该去打桥接机");
+});
+
+test("已合并的顾客不再收讯息", async () => {
+  const db = createTestDb();
+  seedCustomer(db, { id: "cust-main" });
+  seedCustomer(db, { id: "cust-dup", phone: "60999888777", merged_into: "cust-main" });
+  const e = sendEnv(db, bridgeOk());
+
+  const res = await worker.fetch(post("/api/wa/send", { customerId: "cust-dup", body: "hi" }, withSecret()), e);
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).error, "customer_merged");
+});
+
+/* ================== /api/wa/test-send：admin 在扫码页试送 ================== */
+
+test("admin 可以试送，staff 不行", async () => {
+  const db = createTestDb();
+  let sentTo = null;
+  const e = adminEnv(db, {
+    bridge: async (target, init) => {
+      if (target.includes("/send")) { sentTo = JSON.parse(init.body).to; return bridgeOk("3EB0T")(); }
+      return new Response("{}", { status: 404 });
+    },
+  });
+
+  const staffRes = await worker.fetch(await asUser("/api/wa/test-send", STAFF, "POST"), e);
+  assert.equal(staffRes.status, 403);
+  assert.equal(sentTo, null, "staff 的请求不该送出任何东西");
+
+  const req = new Request("https://x.workers.dev/api/wa/test-send", {
+    method: "POST",
+    headers: { "Cf-Access-Jwt-Assertion": await jwtFor(ADMIN), "content-type": "application/json" },
+    body: JSON.stringify({ to: "012-3456789", body: "测试" }),
+  });
+  const body = await (await worker.fetch(req, e)).json();
+  assert.equal(body.sent, true);
+  assert.equal(sentTo, "60123456789", "号码要正规化后再送");
+});
+
+test("试送不自己写纪录 —— 等 webhook 回来时才收录，避免记成两笔", async () => {
+  const db = createTestDb();
+  const e = adminEnv(db, { bridge: bridgeOk("3EB0T2") });
+  const req = new Request("https://x.workers.dev/api/wa/test-send", {
+    method: "POST",
+    headers: { "Cf-Access-Jwt-Assertion": await jwtFor(ADMIN), "content-type": "application/json" },
+    body: JSON.stringify({ to: "60123456789", body: "测试" }),
+  });
+  await worker.fetch(req, e);
+  assert.equal(db._rows("SELECT * FROM messages").length, 0);
 });
