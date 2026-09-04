@@ -8,7 +8,7 @@ import {
 } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
 import { handleApi, json } from "./api.js";
-import { handleWhatsApp, handleWhatsAppAdmin } from "./whatsapp.js";
+import { handleWhatsApp, handleWhatsAppAdmin, runOutboxTick } from "./whatsapp.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -254,12 +254,23 @@ async function serveApp(request, env) {
 /* --------------------------- WhatsApp 路由 --------------------------- */
 
 /** 桥接机（机器）打的：验 X-Bridge-Secret，不需要使用者身分 */
-const BRIDGE_ROUTES = new Set(["/api/wa/status", "/api/wa/webhook", "/api/wa/send"]);
+const BRIDGE_ROUTES = new Set(["/api/wa/status", "/api/wa/webhook", "/api/wa/send", "/api/wa/outbox"]);
 
 /** 「WhatsApp 连接」页（人）打的：走 Access 使用者身分，而且只有 admin */
 const WA_ADMIN_ROUTES = new Set(["/api/wa/qr", "/api/wa/reconnect", "/api/wa/test-send"]);
 
 export default {
+  /**
+   * 出讯佇列的排程器。
+   *
+   * 刻意不做任何「补偿」逻辑：这一分钟没跑成，下一分钟再跑就好。
+   * 排程时间是建立时算好的事实，不会因为漏跑一次而需要追赶 ——
+   * 追赶正是会一次送出一大批、然后被封号的那种设计。
+   */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runOutboxTick(env));
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
 

@@ -52,6 +52,12 @@ ACCESS_ENFORCE = "true"
 # "false" = 查不到就当 staff 放行
 REQUIRE_USER_ROW = "true"
 
+# 出讯佇列的排程器。每分钟看一次有没有到点的，每次只取少量。
+# 频率高不代表送得多 —— 送多少是 wa.spacing_seconds 和 wa.daily_cap 决定的，
+# cron 只负责「到点了就处理」。
+[triggers]
+crons = ["* * * * *"]
+
 # 前端静态档（build 出来的 CRM）
 [assets]
 directory = "./public"

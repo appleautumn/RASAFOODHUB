@@ -12,6 +12,7 @@
 
 import { normalizePhone } from "./phone.js";
 import { nowIso, nextSeq } from "./sql.js";
+import { enqueue, claimDue, processBatch, readSettings } from "./outbox.js";
 
 const PLATFORM = "whatsapp";
 /** 系统写入的 actor。不要伪装成人 —— 团队活动页要分得出来是机器写的。 */
@@ -510,6 +511,53 @@ export async function handleWhatsAppAdmin(request, env, url) {
   return jsonResponse({ ok: false, error: "not_found" }, 404);
 }
 
+/* ============================ 出讯佇列 ============================ */
+
+/**
+ * cron 每分钟呼叫一次。取到点的少量几笔，逐一处理。
+ *
+ * 送出成功时把那一则写进 messages，用平台给的 id —— 跟直接送出走同一套，
+ * 所以平台稍后把它当 fromMe 推回 webhook 时会被 UNIQUE 挡掉，不会变两笔。
+ */
+export async function runOutboxTick(env) {
+  if (!env.DB) return { ok: false, error: "db_not_bound" };
+
+  const settings = await readSettings(env.DB);
+  const rows = await claimDue(env.DB);
+  if (rows.length === 0) return { ok: true, claimed: 0, shadow: settings.shadow };
+
+  const result = await processBatch(env.DB, rows, {
+    shadow: settings.shadow,
+    send: async ({ to, body }) => {
+      const sent = await sendViaBridge(env, { to, body });
+      return sent.ok ? { ok: true, id: sent.id } : { ok: false, error: "bridge_send_failed" };
+    },
+    recordMessage: async (row, sent) => {
+      const iso = nowIso();
+      await env.DB
+        .prepare(
+          `INSERT OR IGNORE INTO messages
+             (id, customer_id, direction, platform, body, platform_msg_id, author, ts, seq)
+           VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          sent.id ? `wa-${sent.id}` : `wa-out-${crypto.randomUUID()}`,
+          row.customer_id,
+          PLATFORM,
+          row.body,
+          sent.id ?? null,
+          row.created_by || SYSTEM_ACTOR,
+          iso,
+          nextSeq()
+        )
+        .run();
+      await touchCustomerTimestamps(env.DB, row.customer_id, iso, "out");
+    },
+  });
+
+  return { ok: true, claimed: rows.length, ...result };
+}
+
 /* ============================ 路由 ============================ */
 
 async function readJson(request) {
@@ -621,6 +669,20 @@ export async function handleWhatsApp(request, env, url) {
     await touchCustomerTimestamps(env.DB, customerId, iso, "out");
 
     return jsonResponse({ ok: true, id, platformMsgId: sent.id, delivered: true });
+  }
+
+  // 排进出讯佇列。送出时间在这里就算好，不是送的时候才算 ——
+  // 节流必须是名单建立当下就固定的事实。
+  if (path === "/api/wa/outbox" && request.method === "POST") {
+    const parsed = await readJson(request);
+    if (!parsed.ok) return jsonResponse({ ok: false, error: "bad_json" }, 400);
+
+    const items = Array.isArray(parsed.body?.items) ? parsed.body.items : null;
+    if (!items) return jsonResponse({ ok: false, error: "items_required" }, 400);
+
+    const actor = String(parsed.body?.actor ?? "").trim() || SYSTEM_ACTOR;
+    const res = await enqueue(env.DB, { items, actor });
+    return jsonResponse(res, res.ok ? res.status : res.status || 400);
   }
 
   return jsonResponse({ ok: false, error: "not_found" }, 404);
