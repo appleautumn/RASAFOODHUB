@@ -48,17 +48,53 @@ export function createQueue({
     return true;
   }
 
+  /**
+   * 把一批讯息推给 Worker。
+   *
+   * ⚠️ 这里对「成功」的认定要严格，原因是踩过一次：
+   *
+   * Cloudflare Access 挡在 Worker 前面。没带 Service Token 的请求会收到
+   * 302，转去 Access 的登入页。而 fetch 预设会跟随转址，且 302 会把 POST
+   * 降级成 GET —— 拿回来的是一个「200 OK 的 HTML 登入页」。只看 res.ok
+   * 的话，这会被当成送达成功，讯息就此消失，而且不留任何错误。
+   *
+   * 所以：不跟随转址，3xx 一律是失败；而且回应必须是 Worker 那份 JSON，
+   * 拿到 HTML 就代表被中间层拦截了。宁可重送，不要漏送。
+   */
   async function flush(batch) {
     const res = await fetchImpl(`${config.workerUrl}/api/wa/webhook`, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ messages: batch }),
+      redirect: "manual",
     });
+
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(
+        `worker ${res.status} 转址：请求没有到达 Worker，多半是被 Cloudflare Access 挡下 ` +
+          `（CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET 没设，或 Access 那边还没加 Service Auth 政策）`
+      );
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`worker ${res.status}: ${text.slice(0, 200)}`);
     }
-    return res.json().catch(() => ({}));
+
+    // 到这里状态码是 2xx，但内容仍可能是别人回的。Worker 成功时一定回 JSON。
+    const type = res.headers.get("content-type") || "";
+    if (!type.includes("json")) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `worker 回了非 JSON（content-type: ${type || "无"}）：这不是 Worker 的回应，` +
+          `请求被中途拦截了。开头：${text.slice(0, 120)}`
+      );
+    }
+
+    const body = await res.json().catch(() => null);
+    if (!body || body.ok !== true) {
+      throw new Error(`worker 回应不是 ok:true：${JSON.stringify(body).slice(0, 200)}`);
+    }
+    return body;
   }
 
   async function drainOnce() {
