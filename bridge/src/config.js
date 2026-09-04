@@ -24,6 +24,10 @@ function readConfig(envSource = process.env) {
     workerUrl: String(envSource.WORKER_URL).trim().replace(/\/+$/, ""),
     secret: String(envSource.WA_BRIDGE_SECRET).trim(),
     authDir: String(envSource.AUTH_DIR || "/data/auth").trim(),
+    // 佇列落地的位置。跟 auth 放同一颗持久磁碟，重启才接得回来。
+    // 刻意放在 authDir 的**同层**而不是里面 —— reset-auth 会删掉整个
+    // auth 目录，佇列不该跟着被删。
+    spoolPath: String(envSource.SPOOL_PATH || "/data/queue.jsonl").trim(),
 
     // Cloudflare Access Service Token。没设也能启动 —— 本机测试时 Worker
     // 可能没挡 Access。但线上少了它，所有请求都会被 Access 拦在门外。

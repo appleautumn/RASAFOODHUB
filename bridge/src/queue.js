@@ -20,9 +20,19 @@ export function createQueue({
   headers,
   rssBytes = () => process.memoryUsage.rss(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  // 落地存放。预设是个什么都不做的替身，测试不必碰磁碟。
+  spool = { load: () => [], save: () => {}, enabled: false },
 }) {
-  const items = [];
-  const stats = { pushed: 0, sent: 0, failed: 0, dropped: 0, batches: 0, lastError: null };
+  // 开机先把上次没送完的接回来，再接受新的
+  const items = spool.load();
+  const stats = {
+    pushed: 0, sent: 0, failed: 0, dropped: 0, batches: 0, lastError: null,
+    // Worker 收下了、但自己判定不收录的则数（时间戳判读不出、JID 不合法…）。
+    // 这些重送也没用，所以不放回佇列 —— 但绝不能无声无息，否则又是一次
+    // 「显示成功、资料没进去」。
+    skippedByWorker: 0,
+    lastWorkerReply: null,
+  };
   let running = false;
   let stopped = false;
 
@@ -45,6 +55,7 @@ export function createQueue({
     }
     items.push(item);
     stats.pushed += 1;
+    spool.save(items);
     return true;
   }
 
@@ -104,15 +115,40 @@ export function createQueue({
     stats.batches += 1;
 
     try {
-      await flush(batch);
+      const reply = await flush(batch);
       stats.sent += batch.length;
       stats.lastError = null;
+
+      // Worker 回的是逐则结果。ok:true 只代表「请求有到、有处理」，
+      // 不代表每一则都收录了 —— 这两件事上次就是混在一起才掉了讯息。
+      stats.lastWorkerReply = {
+        at: new Date().toISOString(),
+        received: reply.received ?? null,
+        stored: reply.stored ?? null,
+        duplicate: reply.duplicate ?? null,
+        skipped: reply.skipped ?? null,
+      };
+
+      // 这批已经确定进 Worker 了，从磁碟上拿掉，重启才不会重送一次。
+      // （重送本身是安全的，但没必要。）
+      spool.save(items);
+
+      const skipped = (reply.results || []).filter((r) => r.status === "skipped");
+      if (skipped.length) {
+        stats.skippedByWorker += skipped.length;
+        log.error("worker_skipped_messages", {
+          count: skipped.length,
+          // 逐则的原因，这是判断「为什么没进 D1」唯一有用的东西
+          reasons: skipped.map((r) => `${r.id}:${r.reason}`).slice(0, 10),
+        });
+      }
     } catch (err) {
       stats.failed += batch.length;
       stats.lastError = String(err.message || err).slice(0, 300);
       // 推不出去就放回队首重试。Worker 那边靠 platform_msg_id 的 UNIQUE
       // 挡重复，所以重送是安全的 —— 宁可重送，不要漏送。
       items.unshift(...batch);
+      spool.save(items);
       log.warn("drain_failed", { queueLength: items.length, error: stats.lastError });
       return { sent: 0, waitMs: config.drainIntervalMs * config.rssBackoffFactor };
     }
@@ -158,6 +194,6 @@ export function createQueue({
     get length() {
       return items.length;
     },
-    stats: () => ({ ...stats, queueLength: items.length }),
+    stats: () => ({ ...stats, queueLength: items.length, spooled: spool.enabled }),
   };
 }

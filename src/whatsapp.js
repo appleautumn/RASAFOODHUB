@@ -389,6 +389,39 @@ async function callBridge(env, path, init = {}) {
   }
 }
 
+/**
+ * 请桥接机把讯息送出去。
+ *
+ * 回 { ok, id } 或 { ok:false, response }。id 是平台给的 message id ——
+ * 一定要记下来：我们送出的讯息，平台稍后会以 fromMe 的形式再推回来一次，
+ * 用同一个 id 写入才会被 platform_msg_id 的 UNIQUE 挡掉，不会变成两笔。
+ */
+async function sendViaBridge(env, { to, body }) {
+  const call = await callBridge(env, "/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ to, body }),
+  });
+  if (!call.ok) return { ok: false, response: call.response };
+
+  const reply = await call.res.json().catch(() => ({}));
+  if (!call.res.ok || reply.ok !== true) {
+    return {
+      ok: false,
+      response: jsonResponse(
+        {
+          ok: false,
+          error: "send_failed",
+          status: call.res.status,
+          detail: reply.detail ?? reply.error ?? null,
+        },
+        502
+      ),
+    };
+  }
+  return { ok: true, id: reply.id ?? null, jid: reply.jid ?? null };
+}
+
 export async function handleWhatsAppAdmin(request, env, url) {
   const path = url.pathname;
 
@@ -446,6 +479,32 @@ export async function handleWhatsAppAdmin(request, env, url) {
       );
     }
     return jsonResponse({ ok: true, reset: true, state: body.state ?? "waiting_qr" });
+  }
+
+  // 在「WhatsApp 连接」页上试送一则，确认出讯这条路真的通。
+  //
+  // 刻意**不**在这里写 messages 表：送出去之后平台会把这则以 fromMe 的
+  // 形式推回 webhook，那条路径会照正常规则收录它。在这里再写一次只会
+  // 变成两笔来源不同的纪录。
+  if (path === "/api/wa/test-send" && request.method === "POST") {
+    const parsed = await readJson(request);
+    if (!parsed.ok) return jsonResponse({ ok: false, error: "bad_json" }, 400);
+
+    const to = String(parsed.body?.to ?? "").trim();
+    const body = String(parsed.body?.body ?? "");
+    if (!to) return jsonResponse({ ok: false, error: "to_required" }, 400);
+    if (!body) return jsonResponse({ ok: false, error: "body_required" }, 400);
+
+    const sent = await sendViaBridge(env, { to: normalizePhone(to), body });
+    if (!sent.ok) return sent.response;
+
+    return jsonResponse({
+      ok: true,
+      sent: true,
+      id: sent.id,
+      to: normalizePhone(to),
+      detail: "已请桥接机送出。这则会经由 webhook 回来，自动记进对话纪录。",
+    });
   }
 
   return jsonResponse({ ok: false, error: "not_found" }, 404);
@@ -515,34 +574,53 @@ export async function handleWhatsApp(request, env, url) {
     if (!body) return jsonResponse({ ok: false, error: "body_required" }, 400);
 
     const customer = await env.DB
-      .prepare("SELECT id FROM customers WHERE id = ?")
+      .prepare("SELECT id, phone, phone_raw, merged_into FROM customers WHERE id = ?")
       .bind(customerId)
       .first();
     if (!customer) return jsonResponse({ ok: false, error: "customer_not_found" }, 404);
 
+    // 只拿得到隐藏 ID 的顾客没有号码可送。这不是错误，是资料还不完整 ——
+    // 讲清楚是哪一种，呼叫端才知道要去补号码而不是重试。
+    if (!customer.phone) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "customer_has_no_phone",
+          detail: `${customerId} 只有隐藏 ID（${customer.phone_raw}），没有可拨的号码。`,
+        },
+        409
+      );
+    }
+    // 合并掉的顾客不该再收到讯息 —— 那会送到一个已经不用的对话
+    if (customer.merged_into) {
+      return jsonResponse(
+        { ok: false, error: "customer_merged", detail: `已合并到 ${customer.merged_into}` },
+        409
+      );
+    }
+
+    const sent = await sendViaBridge(env, { to: customer.phone, body });
+    if (!sent.ok) return sent.response;
+
     // 呼叫端可以指明是哪位同事按的送出；没指明就是系统写的，照实标记。
     const actor = String(parsed.body?.actor ?? "").trim() || SYSTEM_ACTOR;
     const iso = nowIso();
-    const id = `wa-out-${crypto.randomUUID()}`;
+    // 用平台给的 id。稍后这则会以 fromMe 的形式从 webhook 回来，
+    // 那时 INSERT OR IGNORE 配 platform_msg_id 的 UNIQUE 就会挡掉重复。
+    const id = sent.id ? `wa-${sent.id}` : `wa-out-${crypto.randomUUID()}`;
 
     await env.DB
       .prepare(
-        `INSERT INTO messages
+        `INSERT OR IGNORE INTO messages
            (id, customer_id, direction, platform, body, platform_msg_id, author, ts, seq)
-         VALUES (?, ?, 'out', ?, ?, NULL, ?, ?, ?)`
+         VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)`
       )
-      .bind(id, customerId, PLATFORM, body, actor, iso, nextSeq())
+      .bind(id, customerId, PLATFORM, body, sent.id, actor, iso, nextSeq())
       .run();
 
     await touchCustomerTimestamps(env.DB, customerId, iso, "out");
 
-    return jsonResponse({
-      ok: true,
-      id,
-      queued: true,
-      delivered: false,
-      detail: "阶段 A：只写纪录，还没有桥接机可以真的送出。",
-    });
+    return jsonResponse({ ok: true, id, platformMsgId: sent.id, delivered: true });
   }
 
   return jsonResponse({ ok: false, error: "not_found" }, 404);

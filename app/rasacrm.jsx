@@ -1677,6 +1677,81 @@ function NewCustomer({ onClose, onSave }) {
 
 /* ============================== Activity =========================== */
 
+/**
+ * 试送一则讯息，确认出讯这条路真的通。
+ *
+ * 刻意只放在这一页：群发与自动化那些流程目前是模拟的，接上真发送要等
+ * 阶段 C 的节流与 outbox —— 没有节流就大量送出，是这种非官方接法被
+ * 封号的最快方式。
+ */
+function WhatsAppTestSend() {
+  const [to, setTo] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  async function send() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/wa/test-send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to, body }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setResult(
+        res.ok && data.sent
+          ? { ok: true, text: `已送出（id ${data.id ?? "—"}）。对方手机应该收得到。` }
+          : { ok: false, text: data.detail || data.error || `HTTP ${res.status}` }
+      );
+      if (res.ok && data.sent) setBody("");
+    } catch (e) {
+      setResult({ ok: false, text: String(e.message || e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded border border-slate-200 bg-white p-4">
+      <div className="text-sm font-medium text-slate-900">试送一则</div>
+      <p className="mt-1 text-xs text-slate-500">
+        用来确认出讯这条路通不通。送出的讯息会经由 webhook 回来，自动记进那位顾客的对话纪录。
+      </p>
+
+      <div className="mt-3 space-y-2">
+        <input
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="号码，例如 0123456789"
+          className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+        />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={2}
+          placeholder="讯息内容"
+          className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+        />
+        <button
+          onClick={send}
+          disabled={busy || !to.trim() || !body.trim()}
+          className="inline-flex items-center gap-1.5 rounded bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40"
+        >
+          <Send className="h-3.5 w-3.5" /> {busy ? "送出中…" : "送出"}
+        </button>
+      </div>
+
+      {result && (
+        <p className={`mt-2 break-words text-xs ${result.ok ? "text-emerald-700" : "text-rose-700"}`}>
+          {result.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ========================= WhatsApp 连接 ========================= */
 
 /**
@@ -1826,6 +1901,8 @@ function WhatsAppLink() {
           </div>
         )}
       </div>
+
+      {state.kind === "connected" && <WhatsAppTestSend />}
 
       <div className="mt-4 rounded border border-slate-200 bg-white p-4">
         <div className="text-sm font-medium text-slate-900">重新连结</div>
