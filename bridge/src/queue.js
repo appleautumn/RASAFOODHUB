@@ -22,7 +22,14 @@ export function createQueue({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
 }) {
   const items = [];
-  const stats = { pushed: 0, sent: 0, failed: 0, dropped: 0, batches: 0, lastError: null };
+  const stats = {
+    pushed: 0, sent: 0, failed: 0, dropped: 0, batches: 0, lastError: null,
+    // Worker 收下了、但自己判定不收录的则数（时间戳判读不出、JID 不合法…）。
+    // 这些重送也没用，所以不放回佇列 —— 但绝不能无声无息，否则又是一次
+    // 「显示成功、资料没进去」。
+    skippedByWorker: 0,
+    lastWorkerReply: null,
+  };
   let running = false;
   let stopped = false;
 
@@ -104,9 +111,29 @@ export function createQueue({
     stats.batches += 1;
 
     try {
-      await flush(batch);
+      const reply = await flush(batch);
       stats.sent += batch.length;
       stats.lastError = null;
+
+      // Worker 回的是逐则结果。ok:true 只代表「请求有到、有处理」，
+      // 不代表每一则都收录了 —— 这两件事上次就是混在一起才掉了讯息。
+      stats.lastWorkerReply = {
+        at: new Date().toISOString(),
+        received: reply.received ?? null,
+        stored: reply.stored ?? null,
+        duplicate: reply.duplicate ?? null,
+        skipped: reply.skipped ?? null,
+      };
+
+      const skipped = (reply.results || []).filter((r) => r.status === "skipped");
+      if (skipped.length) {
+        stats.skippedByWorker += skipped.length;
+        log.error("worker_skipped_messages", {
+          count: skipped.length,
+          // 逐则的原因，这是判断「为什么没进 D1」唯一有用的东西
+          reasons: skipped.map((r) => `${r.id}:${r.reason}`).slice(0, 10),
+        });
+      }
     } catch (err) {
       stats.failed += batch.length;
       stats.lastError = String(err.message || err).slice(0, 300);

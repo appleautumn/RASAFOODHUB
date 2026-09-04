@@ -200,3 +200,57 @@ test("Access 恢复之后，堆着的讯息会照原顺序补送", async () => {
   assert.deepEqual(calls, [["A", "B"], ["C"]], "补送要照原本的顺序");
   assert.equal(q.length, 0);
 });
+
+/* ============ Worker 说「略过」时不可以静静吞掉 ============ */
+
+/**
+ * Worker 就算把讯息略过（时间戳判读不出、JID 不合法）仍然回 ok:true 加上
+ * skipped 计数。只看 ok 的话，这些讯息会从佇列消失而没人知道 ——
+ * 跟先前把 Access 登入页当成送达是同一类错误。
+ */
+
+const workerReply = (body) =>
+  new Response(JSON.stringify(body), {
+    status: 200, headers: { "content-type": "application/json" },
+  });
+
+test("Worker 略过的则数会计入 skippedByWorker", async () => {
+  const { q } = make({ onFetch: () => workerReply({
+    ok: true, received: 2, stored: 1, duplicate: 0, skipped: 1,
+    results: [
+      { status: "stored", id: "A" },
+      { status: "skipped", id: "B", reason: "bad_timestamp" },
+    ],
+  }) });
+  q.push(msg("A")); q.push(msg("B"));
+  await q.drainOnce();
+
+  const s = q.stats();
+  assert.equal(s.skippedByWorker, 1, "被略过的则数要看得见");
+  assert.equal(s.sent, 2, "请求本身是成功的");
+});
+
+test("lastWorkerReply 记下 stored / skipped，/health 才看得出真相", async () => {
+  const { q } = make({ onFetch: () => workerReply({
+    ok: true, received: 1, stored: 0, duplicate: 0, skipped: 1,
+    results: [{ status: "skipped", id: "A", reason: "bad_jid" }],
+  }) });
+  q.push(msg("A"));
+  await q.drainOnce();
+
+  const r = q.stats().lastWorkerReply;
+  assert.equal(r.received, 1);
+  assert.equal(r.stored, 0);
+  assert.equal(r.skipped, 1);
+});
+
+test("全部收录时 skippedByWorker 保持 0", async () => {
+  const { q } = make({ onFetch: () => workerReply({
+    ok: true, received: 1, stored: 1, duplicate: 0, skipped: 0,
+    results: [{ status: "stored", id: "A" }],
+  }) });
+  q.push(msg("A"));
+  await q.drainOnce();
+  assert.equal(q.stats().skippedByWorker, 0);
+  assert.equal(q.stats().lastWorkerReply.stored, 1);
+});
