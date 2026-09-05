@@ -15,6 +15,7 @@ import { nowIso, nextSeq } from "./sql.js";
 import { extractIntake } from "./intake.js";
 import { mergeIntake } from "./casefile.js";
 import { readReceipt } from "./receipt.js";
+import { matchMachine, listMachines } from "./machines.js";
 
 const PLATFORM = "whatsapp";
 /** 系统写入的 actor。不要伪装成人 —— 团队活动页要分得出来是机器写的。 */
@@ -349,6 +350,62 @@ async function addNote(db, customerId, body) {
     .run();
 }
 
+
+/**
+ * 顾客讲了地方或机号，对回清单上真实存在的那一台。
+ *
+ * 只在 machine_id 还空着的时候做，而且只在**很有把握**的时候写 ——
+ * 「Taman Melawati」有两台的时候宁可留空让人问一句，也不要填一台错的。
+ * 填错的机号会一路带到 FINEXUS 核实才被发现，那时候顾客已经走了。
+ *
+ * 顺便查一件事：顾客自己打的机号如果不在清单里，留一条 note。
+ * 那多半是打错，早点看到早点问。
+ */
+async function applyMachineMatch(db, customerId, text, filledMachineId) {
+  let machines;
+  try {
+    machines = await listMachines(db);
+  } catch {
+    return { filled: [] }; // 清单表还没建（migration 没跑）—— 不挡收讯
+  }
+  if (!machines.length) return { filled: [] };
+
+  // 顾客自己填了机号：只检查在不在清单里，不改它
+  if (filledMachineId) {
+    const known = machines.some((m) => normalizeId(m.machineId) === normalizeId(filledMachineId));
+    if (!known) {
+      await addNote(db, customerId, `顾客填的机号「${filledMachineId}」不在机器清单里。可能打错了，核实前先确认一下。`);
+    }
+    return { filled: [] };
+  }
+
+  const row = await db
+    .prepare("SELECT machine_id, location_name FROM customers WHERE id = ?")
+    .bind(customerId).first();
+  if (!row || String(row.machine_id || "").trim()) return { filled: [] };
+
+  const { machine, candidates, by } = matchMachine(text, machines);
+  if (!machine) {
+    if (candidates.length > 1) {
+      const names = candidates.map((m) => `${m.machineId}（${m.locationName}）`).join("、");
+      await addNote(db, customerId, `顾客讲的地方对到不只一台：${names}。要问一句是哪一台。`);
+    }
+    return { filled: [] };
+  }
+
+  await db
+    .prepare("UPDATE customers SET machine_id = ?, location_name = ?, updated_at = ?, updated_by = ? WHERE id = ?")
+    .bind(machine.machineId, machine.locationName, nowIso(), SYSTEM_ACTOR, customerId)
+    .run();
+  await addNote(
+    db, customerId,
+    `系统从顾客讯息对到机器：${machine.machineId}（${machine.locationName}），依据是${by === "machine_id" ? "机号" : "点位名称"}。`
+  );
+  return { filled: ["machineId", "locationName"] };
+}
+
+const normalizeId = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+
 async function hasTag(db, customerId, tag) {
   const row = await db
     .prepare("SELECT 1 AS ok FROM customer_tags WHERE customer_id = ? AND tag = ? LIMIT 1")
@@ -359,11 +416,11 @@ async function hasTag(db, customerId, tag) {
 
 async function applyIntake(db, customerId, text) {
   const { fields } = extractIntake(text);
-  if (!Object.keys(fields).length) return { filled: [] };
+  if (!Object.keys(fields).length) return { filled: [], changes: {} };
 
   const cols = Object.values(INTAKE_COLUMNS).join(", ");
   const row = await db.prepare(`SELECT ${cols} FROM customers WHERE id = ?`).bind(customerId).first();
-  if (!row) return { filled: [] };
+  if (!row) return { filled: [], changes: {} };
 
   const current = Object.fromEntries(
     Object.entries(INTAKE_COLUMNS).map(([key, col]) => [key, row[col] || ""])
@@ -378,7 +435,7 @@ async function applyIntake(db, customerId, text) {
 
   const changes = mergeIntake(current, fields);
   const keys = Object.keys(changes);
-  if (!keys.length) return { filled: [] };
+  if (!keys.length) return { filled: [], changes: {} };
 
   const sets = keys.map((k) => `${INTAKE_COLUMNS[k]} = ?`);
   const binds = keys.map((k) => changes[k]);
@@ -399,7 +456,7 @@ async function applyIntake(db, customerId, text) {
 
   await addNote(db, customerId, "系统从顾客讯息读到：" + keys.map((k) => `${k}=${changes[k]}`).join("、"));
 
-  return { filled: keys };
+  return { filled: keys, changes };
 }
 
 /**
@@ -463,7 +520,13 @@ export async function ingestMessage(db, raw, env = null) {
   let filled = [];
   let receipt = null;
   if (inserted && direction === "in") {
-    ({ filled } = await applyIntake(db, customer.id, String(raw?.text ?? "")));
+    const text = String(raw?.text ?? "");
+    const intake = await applyIntake(db, customer.id, text);
+    filled = intake.filled;
+
+    // 顾客自己填了机号就查一下在不在清单里；没填就试着从他讲的地方对回来
+    const matched = await applyMachineMatch(db, customer.id, text, intake.changes?.machineId || null);
+    filled = [...filled, ...matched.filled];
 
     // 附带图片或 PDF 的，再交给模型读一次收据。
     // 没有 env 就是没有 API key 可用（测试、或还没设定）—— 跳过，不当成错误。

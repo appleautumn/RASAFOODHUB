@@ -23,6 +23,7 @@ import { triage } from "./triage.js";
 import { caseSummary, caseStatus, mergeIntake } from "./casefile.js";
 import { PLAYBOOK_KEY, parsePlaybook, buildSystemPrompt, DEFAULT_SCENARIOS, withNewDefaults } from "./playbook.js";
 import { draftReply } from "./ai.js";
+import { listMachines, upsertMachine, deleteMachine, parseMachineList } from "./machines.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -273,6 +274,48 @@ export async function handleApi(request, env, url, user) {
   }
 
   /* --------------------------- settings --------------------------- */
+
+  /* ---------------------------- 机器清单 ---------------------------- */
+
+  if (seg[1] === "machines") {
+    // GET /api/machines —— 整份清单。35 台，一次拿完最简单。
+    if (seg.length === 2 && method === "GET") {
+      return json({ ok: true, machines: await listMachines(db) });
+    }
+
+    // POST /api/machines/import —— 贴一段清单进来，一次建好
+    if (seg[2] === "import" && method === "POST") {
+      const parsed = await readJson(request);
+      if (!parsed.ok) return fail(parsed);
+      const { machines, errors, duplicates } = parseMachineList(parsed.body?.text || "");
+
+      const saved = [];
+      const failed = [...errors];
+      for (const m of machines) {
+        const r = await upsertMachine(db, m, user.email);
+        if (r.ok) saved.push(m.machineId);
+        else failed.push({ text: `${m.locationName} / ${m.machineId}`, reason: r.error });
+      }
+      return json({ ok: true, saved: saved.length, machines: await listMachines(db), errors: failed, duplicates });
+    }
+
+    if (seg.length === 2 && method === "POST") {
+      const parsed = await readJson(request);
+      if (!parsed.ok) return fail(parsed);
+      const r = await upsertMachine(db, parsed.body?.machine || {}, user.email);
+      if (!r.ok) return fail(r);
+      return json({ ok: true, id: r.id, machines: await listMachines(db) });
+    }
+
+    if (seg.length === 3 && method === "DELETE") {
+      const id = decodeURIComponent(seg[2]);
+      if (!ID_RE.test(id)) return json({ ok: false, error: "bad_id" }, 400);
+      await deleteMachine(db, id);
+      return json({ ok: true, machines: await listMachines(db) });
+    }
+
+    return json({ ok: false, error: "method_not_allowed" }, 405);
+  }
 
   /* ------------------------------ 分诊 ------------------------------ */
 
