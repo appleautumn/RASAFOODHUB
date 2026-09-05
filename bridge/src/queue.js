@@ -22,6 +22,8 @@ export function createQueue({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   // 落地存放。预设是个什么都不做的替身，测试不必碰磁碟。
   spool = { load: () => [], save: () => {}, enabled: false },
+  // 把附件下载回来的函式。没给就不下载，讯息照送，只是没有图。
+  downloadMedia = null,
 }) {
   // 开机先把上次没送完的接回来，再接受新的
   const items = spool.load();
@@ -32,6 +34,8 @@ export function createQueue({
     // 「显示成功、资料没进去」。
     skippedByWorker: 0,
     lastWorkerReply: null,
+    // 附件：下载成功几个、失败几个、最后一次失败的原因
+    mediaDownloaded: 0, mediaFailed: 0, lastMediaError: null,
   };
   let running = false;
   let stopped = false;
@@ -108,14 +112,63 @@ export function createQueue({
     return body;
   }
 
+  /**
+   * 取一批出来送。
+   *
+   * 带附件的讯息**自己一则一送**：一张收据 base64 之后就是好几 MB，
+   * 跟其他讯息挤在同一个请求里，body 会大到不知道谁先炸。
+   * 所以规则很简单 —— 队首有附件就只取那一则，没有就取到下一个有附件的为止。
+   */
+  function takeBatch() {
+    if (items[0]?.media) return items.splice(0, 1);
+    const end = items.findIndex((it) => it?.media);
+    const limit = end === -1 ? config.drainBatch : Math.min(config.drainBatch, end);
+    return items.splice(0, Math.max(1, limit));
+  }
+
+  /**
+   * 把附件下载回来，接到要送出的那份副本上。
+   *
+   * 刻意做成**副本**：送失败时放回佇列的要是原本那份精简的描述，
+   * 不能把几 MB 的 base64 放回去，更不能让它写进磁碟上的 spool。
+   *
+   * 下载失败不挡讯息 —— 文字照送，附件标成读不到，让人看得见。
+   */
+  async function hydrate(batch) {
+    if (!downloadMedia) return batch.map(({ media, ...rest }) => (media ? { ...rest, mediaSkipped: "no_downloader" } : rest));
+
+    const out = [];
+    for (const item of batch) {
+      if (!item?.media) {
+        out.push(item);
+        continue;
+      }
+      const { media, ...rest } = item;
+      try {
+        const dataBase64 = await downloadMedia(media);
+        stats.mediaDownloaded += 1;
+        out.push({
+          ...rest,
+          media: { kind: media.kind, mimetype: media.mimetype, fileName: media.fileName, dataBase64 },
+        });
+      } catch (err) {
+        stats.mediaFailed += 1;
+        stats.lastMediaError = String(err.message || err).slice(0, 200);
+        log.warn("media_download_failed", { id: item.id, error: stats.lastMediaError });
+        out.push({ ...rest, mediaSkipped: stats.lastMediaError });
+      }
+    }
+    return out;
+  }
+
   async function drainOnce() {
     if (items.length === 0) return { sent: 0, waitMs: config.drainIntervalMs };
 
-    const batch = items.splice(0, config.drainBatch);
+    const batch = takeBatch();
     stats.batches += 1;
 
     try {
-      const reply = await flush(batch);
+      const reply = await flush(await hydrate(batch));
       stats.sent += batch.length;
       stats.lastError = null;
 

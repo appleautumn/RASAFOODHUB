@@ -41,6 +41,11 @@ function readConfig(envSource = process.env) {
     // rss 超过这个数字就把推送间隔拉长，让 GC 追得上
     rssSoftLimitMb: Number(envSource.RSS_SOFT_LIMIT_MB || 320),
     rssBackoffFactor: Number(envSource.RSS_BACKOFF_FACTOR || 6),
+
+    // 附件上限。收据截图通常几百 KB；超过这个就不下载，讯息照送。
+    // 抓 2 MB 是因为 base64 会再胖三分之一，加上 JSON 之后还要塞得进
+    // 一个 Worker 请求 —— 上限订在这里，比在下游发现 body 太大好查。
+    mediaMaxBytes: Number(envSource.MEDIA_MAX_BYTES || 2 * 1024 * 1024),
   };
 }
 

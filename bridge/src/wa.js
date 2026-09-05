@@ -19,9 +19,50 @@ import makeWASocket, {
   DisconnectReason,
   makeCacheableSignalKeyStore,
   Browsers,
+  downloadContentFromMessage,
 } from "@whiskeysockets/baileys";
 import { rm, mkdir } from "node:fs/promises";
 import { log } from "./log.js";
+
+/**
+ * 附件描述。
+ *
+ * **不在这里下载**。下载要 await，而事件处理程序必须同步做完（见档头第 2 点）。
+ * 这里只抽出「等一下要怎么把它下载回来」需要的那几个小栏位，真正下载在
+ * queue 推送前才做。
+ *
+ * 三个二进位栏位转成 base64 字串，因为佇列会落地成 JSON —— 直接放
+ * Uint8Array 的话，重启读回来会变成 {"0":1,"1":2,…}，解密就失败了。
+ */
+function mediaDescriptor(content) {
+  // documentWithCaptionMessage 是包了一层的文件讯息，先拆开
+  const inner = content?.documentWithCaptionMessage?.message || content;
+
+  const node = inner?.imageMessage
+    ? { node: inner.imageMessage, kind: "image" }
+    : inner?.documentMessage
+      ? { node: inner.documentMessage, kind: "document" }
+      : null;
+
+  if (!node || !node.node?.url || !node.node?.mediaKey) return null;
+
+  const b64 = (v) => (v ? Buffer.from(v).toString("base64") : "");
+  const m = node.node;
+
+  return {
+    kind: node.kind,
+    mimetype: String(m.mimetype || ""),
+    fileName: String(m.fileName || ""),
+    // Long 或 number 都可能，转成数字给上限判断用；转不出来给 0（不设限）
+    fileLength: Number(m.fileLength?.toNumber?.() ?? m.fileLength ?? 0) || 0,
+    url: String(m.url || ""),
+    directPath: String(m.directPath || ""),
+    mediaKey: b64(m.mediaKey),
+    fileEncSha256: b64(m.fileEncSha256),
+    fileSha256: b64(m.fileSha256),
+    mediaKeyTimestamp: Number(m.mediaKeyTimestamp?.toNumber?.() ?? m.mediaKeyTimestamp ?? 0) || 0,
+  };
+}
 
 /** 从 Baileys 的讯息物件抽出我们要的那几个栏位。纯函式，好测。 */
 export function extractMessage(m) {
@@ -35,13 +76,16 @@ export function extractMessage(m) {
   if (!id) return null;
 
   const content = m?.message || {};
+  const inner = content.documentWithCaptionMessage?.message || content;
   const text =
     content.conversation ??
     content.extendedTextMessage?.text ??
-    content.imageMessage?.caption ??
-    content.videoMessage?.caption ??
-    content.documentMessage?.caption ??
+    inner.imageMessage?.caption ??
+    inner.videoMessage?.caption ??
+    inner.documentMessage?.caption ??
     "";
+
+  const media = mediaDescriptor(content);
 
   return {
     id,
@@ -52,7 +96,37 @@ export function extractMessage(m) {
     // toEpochSeconds 的工作，这里不要自己转 —— 转错了两边规则会不一致。
     timestamp: m?.messageTimestamp ?? null,
     pushName: String(m?.pushName || ""),
+    ...(media ? { media } : {}),
   };
+}
+
+/**
+ * 把附件下载回来，转成 base64。
+ *
+ * 边下边数，超过上限就中断 —— 不要先整包收下来再检查大小，那样上限就
+ * 只是个装饰，记忆体已经吃下去了。
+ */
+export async function downloadMedia(media, { maxBytes, download = downloadContentFromMessage } = {}) {
+  const buf = (b64) => (b64 ? Buffer.from(b64, "base64") : undefined);
+  const node = {
+    url: media.url,
+    directPath: media.directPath,
+    mediaKey: buf(media.mediaKey),
+    fileEncSha256: buf(media.fileEncSha256),
+    fileSha256: buf(media.fileSha256),
+    mediaKeyTimestamp: media.mediaKeyTimestamp || undefined,
+    mimetype: media.mimetype,
+  };
+
+  const stream = await download(node, media.kind);
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    total += chunk.length;
+    if (total > maxBytes) throw new Error(`附件超过 ${maxBytes} bytes 上限`);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("base64");
 }
 
 export function createWhatsApp({ config, queue }) {

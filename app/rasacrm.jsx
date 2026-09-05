@@ -25,6 +25,7 @@ import {
   ShieldAlert,
   ChevronRight,
   BookOpen,
+  Server,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -772,6 +773,21 @@ export default function App() {
     setPage("pipeline");
   };
 
+  /* --------------------------- 机器清单 --------------------------- */
+
+  // 35 台机，一次拿完。顾客页的 Machine ID 下拉与「机器清单」页共用这一份。
+  const [machines, setMachines] = useState([]);
+  const loadMachines = useCallback(async () => {
+    try {
+      const res = await fetch("/api/machines", { cache: "no-store" });
+      const data = await res.json();
+      if (data.ok) setMachines(data.machines);
+    } catch {
+      /* 读不到就是空清单：Machine ID 会退回自由输入，不挡人做事 */
+    }
+  }, []);
+  useEffect(() => { loadMachines(); }, [loadMachines]);
+
   /* ------------------------- 导航与权限 ------------------------- */
   const isAdmin = identity?.role === "admin";
   const NAV = [
@@ -783,11 +799,12 @@ export default function App() {
     { id: "activity", label: "团队活动", icon: History, adminOnly: true },
     { id: "wa", label: "WhatsApp 连接", icon: QrCode, adminOnly: true },
     { id: "playbook", label: "回覆剧本", icon: BookOpen, adminOnly: true },
+    { id: "machines", label: "机器清单", icon: Server, adminOnly: true },
   ];
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
 
   useEffect(() => {
-    if (["activity", "wa", "playbook"].includes(page) && !isAdmin) setPage("overview");
+    if (["activity", "wa", "playbook", "machines"].includes(page) && !isAdmin) setPage("overview");
   }, [page, isAdmin]);
 
   if (authError) {
@@ -889,6 +906,7 @@ export default function App() {
               bulkApply={bulkApply}
               seedDemo={seedDemo}
               setToast={setToast}
+              machines={machines}
             />
           )}
           {page === "automation" && (
@@ -929,6 +947,7 @@ export default function App() {
             ))}
           {page === "wa" && (isAdmin ? <WhatsAppLink /> : <Blocked />)}
           {page === "playbook" && (isAdmin ? <Playbook setToast={setToast} /> : <Blocked />)}
+          {page === "machines" && (isAdmin ? <Machines machines={machines} reload={loadMachines} setToast={setToast} /> : <Blocked />)}
         </main>
       </div>
 
@@ -1083,6 +1102,7 @@ function Overview({ customers, onJump, onSeed }) {
 function Pipeline({
   customers, stage, setStage, view, setView,
   addCustomer, updateCustomer, addTimelineNote, bulkApply, seedDemo, setToast,
+  machines = [],
 }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState({ key: "updatedAt", dir: "desc" });
@@ -1354,6 +1374,7 @@ function Pipeline({
           onUpdate={updateCustomer}
           onNote={addTimelineNote}
           setToast={setToast}
+          machines={machines}
         />
       )}
       {showNew && (
@@ -1446,7 +1467,7 @@ function BulkBar({ count, onClear, onApply }) {
 
 /* ------------------------------ Drawer ---------------------------- */
 
-function Drawer({ customer: c, onClose, onUpdate, onNote, setToast }) {
+function Drawer({ customer: c, onClose, onUpdate, onNote, setToast, machines = [] }) {
   const [note, setNote] = useState("");
   const [tagInput, setTagInput] = useState("");
 
@@ -1482,13 +1503,21 @@ function Drawer({ customer: c, onClose, onUpdate, onNote, setToast }) {
             <Field label="WhatsApp">
               <input value={c.whatsapp} onChange={(e) => set({ whatsapp: e.target.value }, "改号码")} className={inputCls} />
             </Field>
-            <Field label="Location Name">
-              <select value={c.locationName} onChange={(e) => set({ locationName: e.target.value }, "改地点")} className={inputCls}>
-                {DEMO_LOCATIONS.map((l) => <option key={l}>{l}</option>)}
-              </select>
-            </Field>
             <Field label="Machine ID">
-              <input value={c.machineId} onChange={(e) => set({ machineId: e.target.value }, "改 Machine ID")} className={inputCls} />
+              <MachinePicker
+                machines={machines}
+                machineId={c.machineId}
+                onPick={(patch) => set(patch, "改 Machine ID")}
+              />
+            </Field>
+            <Field label="Location Name">
+              {/* 机号选了就自动带出来，不给改 —— 两栏对不起来才是最难查的那种错 */}
+              <input
+                value={c.locationName}
+                readOnly
+                placeholder="选了 Machine ID 就会自动带出来"
+                className={cx(inputCls, "bg-slate-50 text-slate-600")}
+              />
             </Field>
             <Field label="Item No">
               <input value={c.itemNo} onChange={(e) => set({ itemNo: e.target.value }, "改 Item no")} className={inputCls} />
@@ -2005,6 +2034,299 @@ function Blocked() {
       <p className="mt-1 text-sm text-amber-800">
         你目前的角色是 staff。要开这一页，请管理员把 users 表里你的 role 改成 admin，再重新整理。
       </p>
+    </div>
+  );
+}
+
+/* ============================ 机器清单 ============================ */
+
+/**
+ * Machine ID 从清单里选，Location 跟着带出来。
+ *
+ * 为什么不让人自由打：打错的机号会一路带到 FINEXUS 核实才被发现，
+ * 那时候顾客早就不在机器旁边了。选单选不出不存在的机器。
+ *
+ * 但**旧资料不能因此消失**：顾客身上原本那串机号如果不在清单里
+ * （手打错的、已撤机的、清单还没建好的），照样列出来并标一下，
+ * 不能因为改了输入方式就把已有的值洗掉。
+ */
+function MachinePicker({ machines, machineId, onPick }) {
+  const current = String(machineId || "");
+  const known = machines.some((m) => m.machineId === current);
+
+  if (!machines.length) {
+    // 清单还没建。退回自由输入，不挡人做事 —— 但讲清楚为什么。
+    return (
+      <>
+        <input
+          value={current}
+          onChange={(e) => onPick({ machineId: e.target.value })}
+          placeholder="RFH-142"
+          className={inputCls}
+        />
+        <p className="mt-1 text-[11px] text-amber-700">
+          机器清单还是空的。到「机器清单」页建好之后，这里就变成选单。
+        </p>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <select
+        value={known ? current : "__other__"}
+        onChange={(e) => {
+          const picked = machines.find((m) => m.machineId === e.target.value);
+          if (picked) onPick({ machineId: picked.machineId, locationName: picked.locationName });
+          else if (e.target.value === "") onPick({ machineId: "", locationName: "" });
+        }}
+        className={inputCls}
+      >
+        <option value="">— 未选择 —</option>
+        {!known && current && <option value="__other__">{current}（不在清单里）</option>}
+        {machines.map((m) => (
+          <option key={m.id} value={m.machineId}>
+            {m.machineId} · {m.locationName}
+            {m.status !== "active" ? `（${MACHINE_STATUS_LABEL[m.status]}）` : ""}
+          </option>
+        ))}
+      </select>
+      {!known && current && (
+        <p className="mt-1 text-[11px] text-amber-700">
+          这串机号不在清单里。可能是打错的，或那台还没建进去。
+        </p>
+      )}
+    </>
+  );
+}
+
+const MACHINE_STATUS_LABEL = { active: "营运中", paused: "暂停", retired: "已撤机" };
+const MACHINE_STATUSES = ["active", "paused", "retired"];
+
+/**
+ * 机器清单页。
+ *
+ * 第一次用的人要做的事只有一件：把 35 台贴进去。
+ * 所以贴上汇入是主要入口，逐台新增是补充。
+ */
+function Machines({ machines, reload, setToast }) {
+  const [paste, setPaste] = useState("");
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [report, setReport] = useState(null);
+  const [draft, setDraft] = useState(null);
+
+  const call = async (path, init) => {
+    const res = await fetch(path, {
+      headers: { "content-type": "application/json" },
+      ...init,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+    return data;
+  };
+
+  const doImport = async () => {
+    setBusy("import");
+    setErr("");
+    setReport(null);
+    try {
+      const data = await call("/api/machines/import", { method: "POST", body: JSON.stringify({ text: paste }) });
+      setReport({ saved: data.saved, errors: data.errors || [], duplicates: data.duplicates || [] });
+      if (data.saved) {
+        setPaste("");
+        setToast(`已建立 / 更新 ${data.saved} 台`);
+      }
+      await reload();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const save = async (machine) => {
+    setBusy("save");
+    setErr("");
+    try {
+      await call("/api/machines", { method: "POST", body: JSON.stringify({ machine }) });
+      setDraft(null);
+      await reload();
+      setToast("已保存");
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const remove = async (m) => {
+    if (!window.confirm(`删掉 ${m.machineId}（${m.locationName}）？\n\n旧个案上的机号不会跟着改，只是之后选不到这一台。\n如果只是暂时不用，把状态改成「已撤机」比较好。`)) return;
+    setBusy("delete");
+    try {
+      await call(`/api/machines/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+      await reload();
+      setToast("已删除");
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold">机器清单</h2>
+            <p className="text-xs text-slate-500">
+              {machines.length} 台 · 顾客页的 Machine ID 从这里来，选了机号就自动带出地点
+            </p>
+          </div>
+          <Btn className="ml-auto" onClick={() => setDraft({ machineId: "", locationName: "", aliases: "", area: "", status: "active", notes: "" })}>
+            <Plus className="mr-1 inline h-4 w-4" />新增一台
+          </Btn>
+        </div>
+
+        {err && (
+          <div className="flex gap-2 border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-700">
+            <AlertTriangle className="h-4 w-4 shrink-0" />{err}
+          </div>
+        )}
+
+        {machines.length === 0 && !draft && (
+          <div className="px-4 py-8 text-center text-sm text-slate-500">
+            还没有任何机器。用下面的「贴上汇入」一次把 35 台建好最快。
+          </div>
+        )}
+
+        {machines.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Machine ID</th>
+                  <th className="px-3 py-2">点位</th>
+                  <th className="px-3 py-2">别名</th>
+                  <th className="px-3 py-2">状态</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {machines.map((m) => (
+                  <tr key={m.id} className="hover:bg-slate-50">
+                    <td className="px-3 py-2 font-mono text-xs">{m.machineId}</td>
+                    <td className="px-3 py-2">{m.locationName}</td>
+                    <td className="px-3 py-2 text-xs text-slate-500">
+                      {m.aliases ? m.aliases.split("\n").filter(Boolean).join("、") : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="px-3 py-2">
+                      <Pill tone={m.status === "active" ? "green" : m.status === "paused" ? "amber" : "slate"}>
+                        {MACHINE_STATUS_LABEL[m.status]}
+                      </Pill>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Btn variant="ghost" onClick={() => setDraft({ ...m })}>
+                        <Pencil className="h-4 w-4" />
+                      </Btn>
+                      <Btn variant="ghost" onClick={() => remove(m)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {draft && (
+        <section className="rounded border border-teal-300 bg-white">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <h2 className="text-sm font-semibold">{draft.id ? "改这一台" : "新增一台"}</h2>
+          </div>
+          <div className="grid gap-3 p-4 sm:grid-cols-2">
+            <Field label="Machine ID（萤幕左边那串）">
+              <input value={draft.machineId} onChange={(e) => setDraft({ ...draft, machineId: e.target.value })} className={inputCls} />
+            </Field>
+            <Field label="点位全名">
+              <input value={draft.locationName} onChange={(e) => setDraft({ ...draft, locationName: e.target.value })} className={inputCls} />
+            </Field>
+            <Field label="别名（一行一个）">
+              <textarea
+                rows={3}
+                value={draft.aliases}
+                onChange={(e) => setDraft({ ...draft, aliases: e.target.value })}
+                placeholder={"selayang\n医院那台"}
+                className={inputCls}
+              />
+            </Field>
+            <div className="space-y-3">
+              <Field label="分区（可留空）">
+                <input value={draft.area} onChange={(e) => setDraft({ ...draft, area: e.target.value })} className={inputCls} />
+              </Field>
+              <Field label="状态">
+                <select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })} className={inputCls}>
+                  {MACHINE_STATUSES.map((v) => <option key={v} value={v}>{MACHINE_STATUS_LABEL[v]}</option>)}
+                </select>
+              </Field>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
+            <Btn onClick={() => setDraft(null)}>取消</Btn>
+            <Btn variant="primary" disabled={busy === "save" || !draft.machineId.trim() || !draft.locationName.trim()} onClick={() => save(draft)}>
+              {busy === "save" ? <><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />保存中…</> : "保存"}
+            </Btn>
+          </div>
+        </section>
+      )}
+
+      <section className="rounded border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-4 py-3">
+          <h2 className="text-sm font-semibold">贴上汇入</h2>
+          <p className="text-xs text-slate-500">
+            一行一台，点位跟机号用逗号或定位分开。顺序哪个在前都行 —— 有数字、没空白的那一栏当作机号。
+          </p>
+        </div>
+        <div className="space-y-3 p-4">
+          <textarea
+            value={paste}
+            onChange={(e) => setPaste(e.target.value)}
+            rows={8}
+            placeholder={"Hospital Selayang Lobby, RFH012\nPusat Bandar Puchong, RFH013\nRFH014\tSMK Taman Melawati"}
+            className={cx(inputCls, "font-mono text-xs")}
+          />
+          <Btn variant="primary" onClick={doImport} disabled={busy === "import" || !paste.trim()}>
+            {busy === "import" ? <><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />汇入中…</> : "汇入"}
+          </Btn>
+          <p className="text-xs text-slate-500">
+            机号一样的会覆盖原本那一台，不会变成两笔。可以先贴几行试试看。
+          </p>
+
+          {report && (
+            <div className="space-y-2 rounded bg-slate-50 p-3 text-sm">
+              <div className="font-medium text-slate-800">建立 / 更新了 {report.saved} 台。</div>
+              {report.duplicates.length > 0 && (
+                <div className="text-amber-800">
+                  贴上的内容里有重复机号（后面的覆盖前面的）：{report.duplicates.join("、")}
+                </div>
+              )}
+              {report.errors.length > 0 && (
+                <div className="space-y-1 text-red-700">
+                  <div>这几行没读懂，没有汇入：</div>
+                  {report.errors.map((e, i) => (
+                    <div key={i} className="font-mono text-xs">
+                      {e.line ? `第 ${e.line} 行：` : ""}{e.text} — {e.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
