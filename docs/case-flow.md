@@ -99,6 +99,39 @@ Item no :
 这种情况会带一个 `暱称待确认` 标签，顾客第一次在表格里写了名字就盖过去，
 同时把标签拿掉 —— 之后就跟其他栏位一样不再被覆盖。
 
+### 收据图片：模型帮你读
+
+顾客传的收据截图或 PDF 会自动读一次，抓四样：
+
+| 读出来的 | 存到 |
+| --- | --- |
+| 付款方式（QR / 卡 / 现金） | `payment_type` |
+| 交易日期 | `receipt_date` |
+| 交易时间 | `receipt_time` |
+| 交易金额 | `receipt_amount` |
+
+怎么走的：
+
+```
+顾客传图 -> 桥接机下载（上限 2 MB，带附件的讯息自己一则一送）
+        -> Worker 把图交给 Claude
+        -> 读出来的值填进空栏位，留一条 note
+        -> 图片丢掉
+```
+
+三条界线：
+
+1. **图片不留**。读完就丢，资料库里只有读出来的那几个值跟一条 note。
+   这是顾客的付款凭证，我们没有理由存着它。
+2. **读不出来就说读不出来**。模型不准猜一个日期填上去 —— 猜出来的值会拿去
+   跟 FINEXUS 对帐，对不上的时候没有人知道那是猜的。格式不对的值（`25:99`、
+   金额 0、认不得的付款方式）在写进去之前就被丢掉。
+3. **只填空栏位**。已经有值的不覆盖，但模型读到什么还是会写进 note，
+   后面标「（未覆盖）」—— 两边不一样的时候要看得出来。
+
+读不成（没设 API key、模型出错、图太糊、附件超过 2 MB）一律**不挡讯息**：
+讯息照收，note 里写清楚为什么，让人知道这张要自己看。
+
 ### 摘要长什么样
 
 `caseSummary()` 产出的东西，同时给人看、也喂给 AI：
@@ -175,7 +208,16 @@ FINEXUS：captured
 
 ## 四、要设的东西
 
-产草稿需要一个 Worker secret：
+**先跑一次 migration**（付款方式那一栏是新加的）：
+
+```sql
+ALTER TABLE customers ADD COLUMN payment_type TEXT NOT NULL DEFAULT '';
+```
+
+D1 Console 贴上去执行就好。没跑也不会坏 —— 程式开机时会问一次这一栏在不在，
+不在就少填那一项，其他照常。
+
+产草稿与读收据需要一个 Worker secret：
 
 ```
 npx wrangler secret put ANTHROPIC_API_KEY
@@ -184,8 +226,10 @@ npx wrangler secret put ANTHROPIC_API_KEY
 没设就是 `503 ai_not_configured` —— 跟桥接机同一个原则：
 **没设定等于不能用，不是「先放行看看」**。分诊不受影响，照常运作。
 
-模型预设是 `claude-sonnet-5`，要换的话在 `wrangler.toml` 的 `[vars]` 加
-`AI_MODEL`。
+模型预设是 `claude-opus-5`。要换的话在 `wrangler.toml` 的 `[vars]` 加
+`AI_MODEL`（草稿与收据都用它）或 `RECEIPT_MODEL`（只换读收据的）。
+读收据是抄写工作不是推理工作，跑在 `effort: low`，也可以单独换成便宜的
+`claude-haiku-4-5`。
 
 呼叫是在 Worker 里发出去的，不是浏览器。API key 不会跟着 JS 送到
 每一台开过后台的电脑上。
@@ -194,7 +238,8 @@ npx wrangler secret put ANTHROPIC_API_KEY
 
 ## 五、目前还没做的
 
-- 收据图片里的日期 / 时间 / 金额还是要人读。文字里有写的话会自动收下。
+- 顾客还是得自己打 Location 与 Machine ID。下一步要做的是给他们一张
+  可以点选的清单，不用打字。
 - 阶段不会自动跳。程式算得出「现在该在哪一段」（`caseStatus()`），
   但改阶段还是人按。
 - 草稿不会自动发。产出来之后要人看过、改过，才发出去。

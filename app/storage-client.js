@@ -31,7 +31,7 @@ const PAGE_SIZE = 500;
 /** 会被送去 PATCH 的顾客栏位。timeline 与 tags 另外处理，其余伺服器自己管。 */
 const PATCHABLE = [
   "name", "whatsapp", "platform", "stage", "priority", "language", "contactType",
-  "locationName", "machineId", "itemNo", "receiptDate", "receiptTime", "receiptAmount",
+  "locationName", "machineId", "itemNo", "receiptDate", "receiptTime", "receiptAmount", "paymentType",
   "machineStatus", "finexusStatus", "notes", "broadcastOptIn", "needsReply",
   "nextFollowUpDate", "followUpCount", "createdAt", "lastInteractionAt",
 ];

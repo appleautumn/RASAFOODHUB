@@ -23,6 +23,9 @@ export const FIELD_LABELS = {
   receiptAmount: "收据金额",
 };
 
+/** 收据上读到的付款方式。核实时决定去 FINEXUS 的哪一边对帐。 */
+export const PAYMENT_LABELS = { qr: "QR / DuitNow", card: "刷卡", cash: "现金" };
+
 /** 顾客那边看到的表格用英文，问缺项时也用英文，跟表格对得上 */
 export const FIELD_ASK = {
   name: "Name",
@@ -171,6 +174,7 @@ export function caseSummary(c) {
     line("ID Machine", c.machineId),
     line("Item no", c.itemNo),
     line("收据", [str(c.receiptDate), str(c.receiptTime), str(c.receiptAmount) && `RM ${c.receiptAmount}`].filter(Boolean).join(" ")),
+    line("付款方式", PAYMENT_LABELS[str(c.paymentType)] || ""),
     line("机器系统", c.machineStatus),
     line("FINEXUS", c.finexusStatus),
     `目前：${status.summary}`,

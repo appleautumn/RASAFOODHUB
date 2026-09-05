@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS customers (
   receipt_date  TEXT NOT NULL DEFAULT '',
   receipt_time  TEXT NOT NULL DEFAULT '',
   receipt_amount TEXT NOT NULL DEFAULT '',
+  payment_type  TEXT NOT NULL DEFAULT '',
   machine_status TEXT NOT NULL DEFAULT 'unknown',
   finexus_status TEXT NOT NULL DEFAULT 'unknown',
 
