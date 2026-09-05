@@ -12,6 +12,8 @@
 
 import { normalizePhone } from "./phone.js";
 import { nowIso, nextSeq } from "./sql.js";
+import { extractIntake } from "./intake.js";
+import { mergeIntake } from "./casefile.js";
 
 const PLATFORM = "whatsapp";
 /** 系统写入的 actor。不要伪装成人 —— 团队活动页要分得出来是机器写的。 */
@@ -20,6 +22,8 @@ export const SYSTEM_ACTOR = "system:whatsapp";
 export const NEW_MESSAGE_TAG = "新讯息";
 /** 只拿得到隐藏 ID、没有电话号码的顾客 */
 export const NEEDS_PHONE_TAG = "待补号码";
+/** name 目前是 WhatsApp 暱称，不是顾客自己写的名字。顾客填了表格就拿掉。 */
+export const NICKNAME_TAG = "暱称待确认";
 
 const jsonResponse = (body, status = 200) =>
   new Response(JSON.stringify(body, null, 2), {
@@ -179,6 +183,8 @@ async function createCustomer(db, { phone, local, lid, raw, displayName }) {
   const created = (res.meta?.changes ?? 0) > 0;
   if (created) {
     const tags = lid ? [NEW_MESSAGE_TAG, NEEDS_PHONE_TAG] : [NEW_MESSAGE_TAG];
+    // 有暱称才标 —— 没暱称的话 name 是空的，本来就会被表格填上
+    if (String(displayName || "").trim()) tags.push(NICKNAME_TAG);
     for (const tag of tags) {
       await db
         .prepare("INSERT OR IGNORE INTO customer_tags (customer_id, tag) VALUES (?, ?)")
@@ -217,6 +223,86 @@ async function touchCustomerTimestamps(db, customerId, iso, direction) {
     .prepare(`UPDATE customers SET ${sets.join(", ")} WHERE id = ?`)
     .bind(...binds, customerId)
     .run();
+}
+
+
+/* 前端的驼峰栏位 -> 资料表的底线栏位。只有个案这几栏用得到。 */
+const INTAKE_COLUMNS = {
+  name: "name",
+  locationName: "location_name",
+  machineId: "machine_id",
+  itemNo: "item_no",
+  receiptDate: "receipt_date",
+  receiptTime: "receipt_time",
+  receiptAmount: "receipt_amount",
+};
+
+/**
+ * 从顾客发来的文字里读出个案资料，填进空的栏位。
+ *
+ * 三条规矩：
+ *   1. **只填空的**。已经有值的一律不动 —— 那个值可能是同事查证过才填的。
+ *   2. 只读 in 方向的讯息。我们自己发出去的表格范本里也有 "Name :"，
+ *      不挡的话会把范本的空值当成顾客填的。
+ *   3. 每一次填都留一条 note。资料是机器填的还是人填的，事后要查得出来。
+ *
+ * 读不出来就什么都不做 —— 这一步失败不该影响讯息本身有没有收进来。
+ */
+async function hasTag(db, customerId, tag) {
+  const row = await db
+    .prepare("SELECT 1 AS ok FROM customer_tags WHERE customer_id = ? AND tag = ? LIMIT 1")
+    .bind(customerId, tag)
+    .first();
+  return Boolean(row);
+}
+
+async function applyIntake(db, customerId, text) {
+  const { fields } = extractIntake(text);
+  if (!Object.keys(fields).length) return { filled: [] };
+
+  const cols = Object.values(INTAKE_COLUMNS).join(", ");
+  const row = await db.prepare(`SELECT ${cols} FROM customers WHERE id = ?`).bind(customerId).first();
+  if (!row) return { filled: [] };
+
+  const current = Object.fromEntries(
+    Object.entries(INTAKE_COLUMNS).map(([key, col]) => [key, row[col] || ""])
+  );
+
+  // 自动建档时 name 填的是 WhatsApp 暱称，不是顾客自己写的名字。
+  // 顾客在表格里写了名字，那个才是要拿去对帐的，让它盖过暱称 ——
+  // 但只有第一次。标签拿掉之后，name 就跟其他栏位一样不再被覆盖，
+  // 同事後来改过的名字不会被顾客重发的旧表格洗掉。
+  const nicknameOnly = fields.name ? await hasTag(db, customerId, NICKNAME_TAG) : false;
+  if (nicknameOnly) current.name = "";
+
+  const changes = mergeIntake(current, fields);
+  const keys = Object.keys(changes);
+  if (!keys.length) return { filled: [] };
+
+  const sets = keys.map((k) => `${INTAKE_COLUMNS[k]} = ?`);
+  const binds = keys.map((k) => changes[k]);
+  sets.push("updated_at = ?", "updated_by = ?");
+  binds.push(nowIso(), SYSTEM_ACTOR);
+
+  await db
+    .prepare(`UPDATE customers SET ${sets.join(", ")} WHERE id = ?`)
+    .bind(...binds, customerId)
+    .run();
+
+  if (nicknameOnly && changes.name) {
+    await db
+      .prepare("DELETE FROM customer_tags WHERE customer_id = ? AND tag = ?")
+      .bind(customerId, NICKNAME_TAG)
+      .run();
+  }
+
+  const body = "系统从顾客讯息读到：" + keys.map((k) => `${k}=${changes[k]}`).join("、");
+  await db
+    .prepare("INSERT INTO notes (id, customer_id, author, body, kind, ts, seq) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(`intake-${customerId}-${nextSeq()}`, customerId, SYSTEM_ACTOR, body, "note", nowIso(), nextSeq())
+    .run();
+
+  return { filled: keys };
 }
 
 /**
@@ -276,11 +362,18 @@ export async function ingestMessage(db, raw) {
   // 而且会让 updated_at 无谓地跳动，干扰前端的乐观锁。
   if (inserted) await touchCustomerTimestamps(db, customer.id, iso, direction);
 
+  // 顾客回填的表格顺手读进个案栏位。只对新收到的、顾客发来的讯息做。
+  let filled = [];
+  if (inserted && direction === "in") {
+    ({ filled } = await applyIntake(db, customer.id, String(raw?.text ?? "")));
+  }
+
   return {
     status: inserted ? "stored" : "duplicate",
     id: platformMsgId,
     customerId: customer.id,
     customerCreated,
+    filled,
     ts: iso,
   };
 }

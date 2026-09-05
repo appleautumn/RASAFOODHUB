@@ -8,6 +8,7 @@ import {
   ingestMessage,
   NEW_MESSAGE_TAG,
   NEEDS_PHONE_TAG,
+  NICKNAME_TAG,
   SYSTEM_ACTOR,
 } from "../src/whatsapp.js";
 
@@ -165,7 +166,31 @@ test("认不出的号码会自动开一位顾客，带「新讯息」标签", as
   assert.equal(c.updated_by, SYSTEM_ACTOR, "系统写入要标成系统，不要伪装成人");
 
   const tags = db._rows("SELECT tag FROM customer_tags WHERE customer_id = ?", c.id).map((t) => t.tag);
+  // name 目前是 WhatsApp 暱称，标起来 —— 顾客填了表格才知道真名
+  assert.deepEqual(tags.sort(), [NEW_MESSAGE_TAG, NICKNAME_TAG].sort());
+});
+
+test("没有暱称就不标「暱称待确认」—— name 本来就是空的", async () => {
+  const db = createTestDb();
+  await ingestMessage(db, msg({ pushName: "" }));
+  const c = db._row("SELECT * FROM customers");
+  const tags = db._rows("SELECT tag FROM customer_tags WHERE customer_id = ?", c.id).map((t) => t.tag);
   assert.deepEqual(tags, [NEW_MESSAGE_TAG]);
+});
+
+test("顾客在表格里写的名字盖过暱称，而且只盖这一次", async () => {
+  const db = createTestDb();
+  const first = await ingestMessage(db, msg({ id: "m1", pushName: "Ali" }));
+  assert.equal(db._row("SELECT * FROM customers").name, "Ali");
+
+  await ingestMessage(db, msg({ id: "m2", text: "Name : Ali bin Ahmad" }));
+  assert.equal(db._row("SELECT * FROM customers").name, "Ali bin Ahmad");
+  const tags = db._rows("SELECT tag FROM customer_tags WHERE customer_id = ?", first.customerId).map((t) => t.tag);
+  assert.equal(tags.includes(NICKNAME_TAG), false, "填过一次就该拿掉标签");
+
+  // 之后重发的旧表格不该再改名字
+  await ingestMessage(db, msg({ id: "m3", text: "Name : Someone Else" }));
+  assert.equal(db._row("SELECT * FROM customers").name, "Ali bin Ahmad");
 });
 
 test("已经存在的顾客不会被重开，讯息挂到既有那位身上", async () => {

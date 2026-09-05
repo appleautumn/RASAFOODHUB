@@ -24,6 +24,7 @@ import {
   FastForward,
   ShieldAlert,
   ChevronRight,
+  BookOpen,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -781,11 +782,12 @@ export default function App() {
     { id: "campaign", label: "群发 Campaign", icon: Send },
     { id: "activity", label: "团队活动", icon: History, adminOnly: true },
     { id: "wa", label: "WhatsApp 连接", icon: QrCode, adminOnly: true },
+    { id: "playbook", label: "回覆剧本", icon: BookOpen, adminOnly: true },
   ];
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
 
   useEffect(() => {
-    if ((page === "activity" || page === "wa") && !isAdmin) setPage("overview");
+    if (["activity", "wa", "playbook"].includes(page) && !isAdmin) setPage("overview");
   }, [page, isAdmin]);
 
   if (authError) {
@@ -926,6 +928,7 @@ export default function App() {
               <Blocked />
             ))}
           {page === "wa" && (isAdmin ? <WhatsAppLink /> : <Blocked />)}
+          {page === "playbook" && (isAdmin ? <Playbook setToast={setToast} /> : <Blocked />)}
         </main>
       </div>
 
@@ -2003,6 +2006,270 @@ function Blocked() {
         你目前的角色是 staff。要开这一页，请管理员把 users 表里你的 role 改成 admin，再重新整理。
       </p>
     </div>
+  );
+}
+
+/* ============================ 回覆剧本 ============================ */
+
+/**
+ * 「顾客可能讲什么 -> 我们怎么回」的那张表，在这里改。
+ *
+ * 改完的剧本会跟着每一次产草稿送给 AI。所以这一页是喂 AI 的地方，
+ * 不是设定页 —— 写在这里的每一句都会影响顾客真的收到什么。
+ */
+function Playbook({ setToast }) {
+  const [scenarios, setScenarios] = useState(null);
+  const [meta, setMeta] = useState({ source: "", updatedAt: "", updatedBy: "", added: [] });
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [openId, setOpenId] = useState("");
+
+  const load = useCallback(async () => {
+    setErr("");
+    try {
+      const res = await fetch("/api/playbook", { cache: "no-store" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "读取失败");
+      setScenarios(data.scenarios);
+      setMeta({
+        source: data.source,
+        updatedAt: data.updatedAt || "",
+        updatedBy: data.updatedBy || "",
+        added: data.addedFromDefaults || [],
+      });
+    } catch (e) {
+      setErr("读不到剧本：" + e.message);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const patch = (id, changes) =>
+    setScenarios((list) => list.map((s) => (s.id === id ? { ...s, ...changes } : s)));
+
+  const remove = (id) => setScenarios((list) => list.filter((s) => s.id !== id));
+
+  const add = () => {
+    const id = `custom_${Date.now().toString(36)}`;
+    setScenarios((list) => [...list, { id, label: "新情境", when: "", reply: "", next: "", escalate: false }]);
+    setOpenId(id);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const res = await fetch("/api/settings/playbook.scenarios", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          value: JSON.stringify({ scenarios }),
+          // 乐观锁：有人在我读完之后改过，这里会被挡下来，不会静静盖掉
+          updatedAt: meta.updatedAt || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error === "conflict" ? "有人刚改过，先重新载入" : data.error);
+      setMeta((m) => ({ ...m, updatedAt: data.updatedAt, source: "stored", added: [] }));
+      setToast("剧本已保存");
+    } catch (e) {
+      setErr("保存失败：" + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!scenarios) {
+    return (
+      <div className="rounded border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
+        {err || "载入中…"}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold">回覆剧本</h2>
+            <p className="text-xs text-slate-500">
+              {scenarios.length} 条情境 · {meta.source === "stored" ? "已改过" : "目前用的是预设"}
+              {meta.updatedBy ? ` · 上次由 ${meta.updatedBy} 改` : ""}
+            </p>
+          </div>
+          <div className="ml-auto flex gap-2">
+            <Btn onClick={load}><RefreshCw className="mr-1 inline h-4 w-4" />重新载入</Btn>
+            <Btn onClick={add}><Plus className="mr-1 inline h-4 w-4" />新增情境</Btn>
+            <Btn variant="primary" onClick={save} disabled={saving}>
+              {saving ? <><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />保存中…</> : "保存"}
+            </Btn>
+          </div>
+        </div>
+
+        {err && (
+          <div className="flex gap-2 border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-700">
+            <AlertTriangle className="h-4 w-4 shrink-0" />{err}
+          </div>
+        )}
+
+        {meta.added.length > 0 && (
+          <div className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+            这次多了 {meta.added.length} 条新的预设情境（{meta.added.join("、")}）。看过之后按保存就会留下来。
+          </div>
+        )}
+
+        <div className="divide-y divide-slate-100">
+          {scenarios.map((s) => (
+            <div key={s.id} className="px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setOpenId(openId === s.id ? "" : s.id)}
+                className="flex w-full items-center gap-2 text-left"
+              >
+                {openId === s.id ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+                <span className="text-sm font-medium">{s.label || s.id}</span>
+                {s.escalate && <Pill tone="red">转真人</Pill>}
+                <span className="ml-auto font-mono text-xs text-slate-400">{s.id}</span>
+              </button>
+
+              {openId === s.id && (
+                <div className="mt-3 space-y-3 pl-6">
+                  <Field label="名字">
+                    <input value={s.label || ""} onChange={(e) => patch(s.id, { label: e.target.value })} className={inputCls} />
+                  </Field>
+                  <Field label="什么时候用这一条">
+                    <textarea rows={2} value={s.when || ""} onChange={(e) => patch(s.id, { when: e.target.value })} className={inputCls} />
+                  </Field>
+                  <Field label="回覆范本（AI 模仿语气，不照抄）">
+                    <textarea rows={4} value={s.reply || ""} onChange={(e) => patch(s.id, { reply: e.target.value })} className={inputCls} />
+                  </Field>
+                  <Field label="下一步">
+                    <textarea rows={2} value={s.next || ""} onChange={(e) => patch(s.id, { next: e.target.value })} className={inputCls} />
+                  </Field>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(s.escalate)}
+                      onChange={(e) => patch(s.id, { escalate: e.target.checked })}
+                    />
+                    这一条要转真人（勾了就不会呼叫 AI）
+                  </label>
+                  <Btn variant="danger" onClick={() => remove(s.id)}>
+                    <Trash2 className="mr-1 inline h-4 w-4" />删掉这一条
+                  </Btn>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <PlaybookTest />
+    </div>
+  );
+}
+
+/**
+ * 拿一则假讯息试跑整条判断。
+ *
+ * 「分诊」不呼叫 AI，只看规则怎么判 —— 改完剧本先按这个，快而且不花钱。
+ * 「产草稿」才会真的呼叫模型，而且一样只产草稿，不会送出去。
+ */
+function PlaybookTest() {
+  const [text, setText] = useState("Saya dah bayar tapi barang tak keluar");
+  const [out, setOut] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+
+  const run = async (mode) => {
+    setBusy(mode);
+    setErr("");
+    setOut(null);
+    try {
+      const path = mode === "draft" ? "/api/ai/draft" : "/api/triage";
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        if (data.error === "ai_not_configured") {
+          throw new Error("Worker 还没设 ANTHROPIC_API_KEY，草稿功能是关着的。分诊不受影响。");
+        }
+        throw new Error(data.detail || data.error);
+      }
+      setOut({ mode, ...data });
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <section className="rounded border border-slate-200 bg-white">
+      <div className="border-b border-slate-200 px-4 py-3">
+        <h2 className="text-sm font-semibold">试一则讯息</h2>
+        <p className="text-xs text-slate-500">不写进任何资料，也不会送出去。改完剧本可以马上试。</p>
+      </div>
+      <div className="space-y-3 p-4">
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} className={inputCls} />
+        <div className="flex gap-2">
+          <Btn onClick={() => run("triage")} disabled={Boolean(busy) || !text.trim()}>
+            {busy === "triage" ? <><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />判断中…</> : "分诊（不呼叫 AI）"}
+          </Btn>
+          <Btn variant="primary" onClick={() => run("draft")} disabled={Boolean(busy) || !text.trim()}>
+            {busy === "draft" ? <><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />产生中…</> : "产草稿"}
+          </Btn>
+        </div>
+
+        {err && (
+          <div className="flex gap-2 rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+            <AlertTriangle className="h-4 w-4 shrink-0" />{err}
+          </div>
+        )}
+
+        {out && (
+          <div className="space-y-3 rounded bg-slate-50 p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill tone={out.escalate ? "red" : "teal"}>
+                {out.escalate ? "转真人" : out.scenario || "没有对上特定情境"}
+              </Pill>
+              {out.matched && <span className="font-mono text-xs text-slate-500">命中：{out.matched}</span>}
+              {out.afterHours && <Pill tone="amber">非工作时间</Pill>}
+            </div>
+
+            {out.missing?.length > 0 && (
+              <div className="text-slate-700">还缺：{out.missing.join("、")}</div>
+            )}
+
+            {out.extracted && Object.keys(out.extracted).length > 0 && (
+              <div className="text-slate-700">
+                读到：{Object.entries(out.extracted).map(([k, v]) => `${k}=${v}`).join("、")}
+              </div>
+            )}
+
+            {out.draft && (
+              <div className="whitespace-pre-wrap rounded border border-slate-200 bg-white p-3 text-slate-800">
+                {out.draft}
+              </div>
+            )}
+
+            {out.escalate && out.mode === "draft" && (
+              <div className="text-red-700">这一则不会呼叫 AI，直接交给真人。</div>
+            )}
+
+            {out.summary && (
+              <pre className="whitespace-pre-wrap rounded border border-slate-200 bg-white p-3 font-sans text-xs text-slate-600">
+                {out.summary}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

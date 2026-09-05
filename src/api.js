@@ -19,6 +19,10 @@ import {
   listOrders, createOrder, listTasks, createTask,
   listActivities, appendActivities, getSetting, getSettings, putSetting, deleteSetting,
 } from "./records.js";
+import { triage } from "./triage.js";
+import { caseSummary, caseStatus, mergeIntake } from "./casefile.js";
+import { PLAYBOOK_KEY, parsePlaybook, buildSystemPrompt, DEFAULT_SCENARIOS, withNewDefaults } from "./playbook.js";
+import { draftReply } from "./ai.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -269,6 +273,120 @@ export async function handleApi(request, env, url, user) {
   }
 
   /* --------------------------- settings --------------------------- */
+
+  /* ------------------------------ 分诊 ------------------------------ */
+
+  // POST /api/triage —— 一则讯息进来，属于哪种情况、还缺什么。
+  // 纯计算，不写资料、不呼叫 AI，所以按几次都无所谓。
+  if (seg[1] === "triage" && method === "POST") {
+    const parsed = await readJson(request);
+    if (!parsed.ok) return fail(parsed);
+    const text = String(parsed.body?.text || "");
+    const customerId = String(parsed.body?.customerId || "");
+
+    let customer = null;
+    if (customerId) {
+      if (!ID_RE.test(customerId)) return json({ ok: false, error: "bad_id" }, 400);
+      const row = await getCustomerRow(db, customerId);
+      if (!row) return json({ ok: false, error: "not_found" }, 404);
+      customer = rowToCustomer(row);
+    }
+
+    const result = triage({ text, customer });
+    const merged = customer ? { ...customer, ...mergeIntake(customer, result.extracted) } : { ...result.extracted };
+    return json({
+      ok: true,
+      ...result,
+      status: caseStatus(merged),
+      summary: caseSummary(merged),
+    });
+  }
+
+  /* ------------------------------ 剧本 ------------------------------ */
+
+  // GET /api/playbook —— 目前生效的剧本，外加预设里新增、存档里还没有的条目
+  if (seg[1] === "playbook" && method === "GET") {
+    const row = await getSetting(db, PLAYBOOK_KEY);
+    const { scenarios, source } = parsePlaybook(row?.value);
+    const { scenarios: full, added } = withNewDefaults(scenarios);
+    return json({
+      ok: true,
+      source,
+      scenarios: full,
+      addedFromDefaults: added,
+      defaultCount: DEFAULT_SCENARIOS.length,
+      updatedAt: row?.updated_at || "",
+      updatedBy: row?.updated_by || "",
+    });
+  }
+
+  /* ---------------------------- AI 草稿 ---------------------------- */
+
+  // POST /api/ai/draft —— 产草稿。只产，不送。
+  if (seg[1] === "ai" && seg[2] === "draft" && method === "POST") {
+    const parsed = await readJson(request);
+    if (!parsed.ok) return fail(parsed);
+    const text = String(parsed.body?.text || "").slice(0, 4000);
+    if (!text.trim()) return json({ ok: false, error: "empty_text" }, 400);
+
+    const customerId = String(parsed.body?.customerId || "");
+    let customer = null;
+    if (customerId) {
+      if (!ID_RE.test(customerId)) return json({ ok: false, error: "bad_id" }, 400);
+      const row = await getCustomerRow(db, customerId);
+      if (!row) return json({ ok: false, error: "not_found" }, 404);
+      customer = rowToCustomer(row);
+    }
+
+    const result = triage({ text, customer });
+    const merged = customer ? { ...customer, ...mergeIntake(customer, result.extracted) } : { ...result.extracted };
+    const summary = caseSummary(merged);
+
+    // 要转真人的那几条，连问都不问模型。拦在这里才拦得住。
+    if (result.escalate) {
+      return json({
+        ok: true, escalate: true, scenario: result.scenario, matched: result.matched,
+        missing: result.missing, summary, draft: "",
+      });
+    }
+
+    const [aiRow, pbRow] = await Promise.all([
+      getSetting(db, "apps.ai"),
+      getSetting(db, PLAYBOOK_KEY),
+    ]);
+
+    let ai = {};
+    try {
+      const parsedAi = JSON.parse(aiRow?.value || "{}");
+      ai = parsedAi && typeof parsedAi === "object" ? (parsedAi.ai || parsedAi) : {};
+    } catch {
+      ai = {};
+    }
+
+    const { scenarios } = parsePlaybook(pbRow?.value);
+    const system = buildSystemPrompt({
+      ai,
+      scenarios,
+      caseSummary: summary,
+      missing: result.missing,
+      suggestedScenarioId: result.scenario,
+    });
+
+    const drafted = await draftReply(env, { system, userText: text });
+    if (!drafted.ok) {
+      return json({
+        ok: false, error: drafted.error, detail: drafted.detail,
+        scenario: result.scenario, missing: result.missing, summary,
+      }, drafted.status);
+    }
+
+    return json({
+      ok: true, escalate: false, draft: drafted.draft, model: drafted.model,
+      scenario: result.scenario, matched: result.matched,
+      missing: result.missing, extracted: result.extracted,
+      afterHours: result.afterHours, summary,
+    });
+  }
 
   if (seg[1] === "settings") {
     // GET /api/settings?keys=apps.ai,apps.automation —— 一趟拿多个
