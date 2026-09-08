@@ -34,6 +34,7 @@ const FIELDS = {
   receiptDate: "receipt_date",
   receiptTime: "receipt_time",
   receiptAmount: "receipt_amount",
+  paymentType: "payment_type",
   machineStatus: "machine_status",
   finexusStatus: "finexus_status",
   notes: "notes",
@@ -71,6 +72,7 @@ export function rowToCustomer(row, { tags = [], timeline = [] } = {}) {
     receiptDate: row.receipt_date || "",
     receiptTime: row.receipt_time || "",
     receiptAmount: row.receipt_amount || "",
+    paymentType: row.payment_type || "",
     machineStatus: row.machine_status,
     finexusStatus: row.finexus_status,
     notes: row.notes || "",
@@ -91,7 +93,7 @@ export function rowToCustomer(row, { tags = [], timeline = [] } = {}) {
 }
 
 const SELECT_COLS = `id, name, phone, phone_raw, platform, stage, priority, language, contact_type,
-  location_name, machine_id, item_no, receipt_date, receipt_time, receipt_amount,
+  location_name, machine_id, item_no, receipt_date, receipt_time, receipt_amount, payment_type,
   machine_status, finexus_status, notes, broadcast_opt_in, needs_reply,
   next_follow_up_date, follow_up_count, created_at, updated_at, last_interaction_at,
   last_message_at, last_customer_message_at, merged_into, updated_by`;

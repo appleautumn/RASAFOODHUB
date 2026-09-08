@@ -8,7 +8,7 @@
 import { readConfig, workerHeaders } from "./config.js";
 import { createQueue } from "./queue.js";
 import { createSpool } from "./spool.js";
-import { createWhatsApp } from "./wa.js";
+import { createWhatsApp, downloadMedia } from "./wa.js";
 import { createBridgeServer } from "./server.js";
 import { log } from "./log.js";
 
@@ -20,7 +20,12 @@ const config = readConfig();
 
 // 佇列落地在持久磁碟上，重启才不会把已收到、还没送出的讯息弄丢
 const spool = createSpool(config.spoolPath);
-const queue = createQueue({ config, headers: () => workerHeaders(config), spool });
+const queue = createQueue({
+  config,
+  headers: () => workerHeaders(config),
+  spool,
+  downloadMedia: (media) => downloadMedia(media, { maxBytes: config.mediaMaxBytes }),
+});
 const wa = createWhatsApp({ config, queue });
 const server = createBridgeServer({ config, wa, queue });
 

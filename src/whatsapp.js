@@ -14,6 +14,8 @@ import { normalizePhone } from "./phone.js";
 import { nowIso, nextSeq } from "./sql.js";
 import { extractIntake } from "./intake.js";
 import { mergeIntake } from "./casefile.js";
+import { readReceipt } from "./receipt.js";
+import { matchMachine, listMachines } from "./machines.js";
 
 const PLATFORM = "whatsapp";
 /** 系统写入的 actor。不要伪装成人 —— 团队活动页要分得出来是机器写的。 */
@@ -248,6 +250,162 @@ const INTAKE_COLUMNS = {
  *
  * 读不出来就什么都不做 —— 这一步失败不该影响讯息本身有没有收进来。
  */
+
+/* 收据读出来的三项 + 付款方式。付款方式是 0004 才加的栏位，可能还没跑。 */
+const RECEIPT_COLUMNS = {
+  paymentType: "payment_type",
+  receiptDate: "receipt_date",
+  receiptTime: "receipt_time",
+  receiptAmount: "receipt_amount",
+};
+
+/**
+ * 这张表有没有这一栏。
+ *
+ * migration 是手动跑的，所以程式有可能先上、栏位还没加。
+ * 与其让整条收讯路径炸掉，不如少填一栏 —— 讯息进得来永远比栏位齐重要。
+ * 一个 Worker 实例只问一次。
+ */
+const columnCache = new Map();
+async function hasColumn(db, table, column) {
+  const cacheKey = `${table}.${column}`;
+  if (columnCache.has(cacheKey)) return columnCache.get(cacheKey);
+  let ok = false;
+  try {
+    const { results = [] } = await db.prepare(`PRAGMA table_info(${table})`).all();
+    ok = results.some((r) => r.name === column);
+  } catch {
+    ok = false;
+  }
+  columnCache.set(cacheKey, ok);
+  return ok;
+}
+
+/**
+ * 顾客传了收据图片或 PDF：交给模型读出付款方式、日期、时间、金额。
+ *
+ * **图片不留**。读完就丢，只留读出来的那几个值跟一条 note。
+ * 这是顾客的付款凭证，我们没有理由存着它。
+ *
+ * 读不到、没设 API key、模型出错 —— 一律不挡讯息，只留一条 note 说明，
+ * 让人知道这张要自己看。安静地什么都不做才是最糟的结果。
+ */
+async function applyReceipt(db, customerId, media, env) {
+  const scan = await readReceipt(env, {
+    mimetype: media?.mimetype,
+    dataBase64: media?.dataBase64,
+  });
+
+  if (!scan.ok) {
+    await addNote(db, customerId, `收据没读成（${scan.error}）：这张要人自己看。`);
+    return { receipt: { ok: false, error: scan.error }, filled: [] };
+  }
+  if (!scan.readable) {
+    await addNote(db, customerId, `收据读不清楚：${scan.reason}。可以请顾客重拍。`);
+    return { receipt: { ok: true, readable: false, reason: scan.reason }, filled: [] };
+  }
+
+  const usable = {};
+  for (const [key, value] of Object.entries(scan.fields)) {
+    if (key === "paymentType" && !(await hasColumn(db, "customers", "payment_type"))) continue;
+    usable[key] = value;
+  }
+
+  const keys = Object.keys(usable);
+  if (!keys.length) {
+    await addNote(db, customerId, "收据读得到，但日期 / 时间 / 金额一项都没读出来。要人看一下。");
+    return { receipt: { ok: true, readable: true, fields: {} }, filled: [] };
+  }
+
+  const cols = keys.map((k) => RECEIPT_COLUMNS[k]).join(", ");
+  const row = await db.prepare(`SELECT ${cols} FROM customers WHERE id = ?`).bind(customerId).first();
+  if (!row) return { receipt: { ok: true, readable: true, fields: usable }, filled: [] };
+
+  const current = Object.fromEntries(keys.map((k) => [k, row[RECEIPT_COLUMNS[k]] || ""]));
+  const changes = mergeIntake(current, usable);
+  const changed = Object.keys(changes);
+
+  // 读到了但栏位已经有值：还是要留纪录，而且要逐项标出哪些没写进去 ——
+  // 「模型读到的」跟「表上写的」不一样的时候，看 note 的人要一眼看得出来。
+  const read = keys
+    .map((k) => `${k}=${usable[k]}${k in changes ? "" : "（未覆盖）"}`)
+    .join("、");
+
+  if (changed.length) {
+    const sets = changed.map((k) => `${RECEIPT_COLUMNS[k]} = ?`);
+    const binds = changed.map((k) => changes[k]);
+    sets.push("updated_at = ?", "updated_by = ?");
+    binds.push(nowIso(), SYSTEM_ACTOR);
+    await db.prepare(`UPDATE customers SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, customerId).run();
+  }
+
+  await addNote(db, customerId, `系统从收据读到：${read}`);
+  return { receipt: { ok: true, readable: true, fields: usable }, filled: changed };
+}
+
+async function addNote(db, customerId, body) {
+  await db
+    .prepare("INSERT INTO notes (id, customer_id, author, body, kind, ts, seq) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(`intake-${customerId}-${nextSeq()}`, customerId, SYSTEM_ACTOR, body, "note", nowIso(), nextSeq())
+    .run();
+}
+
+
+/**
+ * 顾客讲了地方或机号，对回清单上真实存在的那一台。
+ *
+ * 只在 machine_id 还空着的时候做，而且只在**很有把握**的时候写 ——
+ * 「Taman Melawati」有两台的时候宁可留空让人问一句，也不要填一台错的。
+ * 填错的机号会一路带到 FINEXUS 核实才被发现，那时候顾客已经走了。
+ *
+ * 顺便查一件事：顾客自己打的机号如果不在清单里，留一条 note。
+ * 那多半是打错，早点看到早点问。
+ */
+async function applyMachineMatch(db, customerId, text, filledMachineId) {
+  let machines;
+  try {
+    machines = await listMachines(db);
+  } catch {
+    return { filled: [] }; // 清单表还没建（migration 没跑）—— 不挡收讯
+  }
+  if (!machines.length) return { filled: [] };
+
+  // 顾客自己填了机号：只检查在不在清单里，不改它
+  if (filledMachineId) {
+    const known = machines.some((m) => normalizeId(m.machineId) === normalizeId(filledMachineId));
+    if (!known) {
+      await addNote(db, customerId, `顾客填的机号「${filledMachineId}」不在机器清单里。可能打错了，核实前先确认一下。`);
+    }
+    return { filled: [] };
+  }
+
+  const row = await db
+    .prepare("SELECT machine_id, location_name FROM customers WHERE id = ?")
+    .bind(customerId).first();
+  if (!row || String(row.machine_id || "").trim()) return { filled: [] };
+
+  const { machine, candidates, by } = matchMachine(text, machines);
+  if (!machine) {
+    if (candidates.length > 1) {
+      const names = candidates.map((m) => `${m.machineId}（${m.locationName}）`).join("、");
+      await addNote(db, customerId, `顾客讲的地方对到不只一台：${names}。要问一句是哪一台。`);
+    }
+    return { filled: [] };
+  }
+
+  await db
+    .prepare("UPDATE customers SET machine_id = ?, location_name = ?, updated_at = ?, updated_by = ? WHERE id = ?")
+    .bind(machine.machineId, machine.locationName, nowIso(), SYSTEM_ACTOR, customerId)
+    .run();
+  await addNote(
+    db, customerId,
+    `系统从顾客讯息对到机器：${machine.machineId}（${machine.locationName}），依据是${by === "machine_id" ? "机号" : "点位名称"}。`
+  );
+  return { filled: ["machineId", "locationName"] };
+}
+
+const normalizeId = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+
 async function hasTag(db, customerId, tag) {
   const row = await db
     .prepare("SELECT 1 AS ok FROM customer_tags WHERE customer_id = ? AND tag = ? LIMIT 1")
@@ -258,11 +416,11 @@ async function hasTag(db, customerId, tag) {
 
 async function applyIntake(db, customerId, text) {
   const { fields } = extractIntake(text);
-  if (!Object.keys(fields).length) return { filled: [] };
+  if (!Object.keys(fields).length) return { filled: [], changes: {} };
 
   const cols = Object.values(INTAKE_COLUMNS).join(", ");
   const row = await db.prepare(`SELECT ${cols} FROM customers WHERE id = ?`).bind(customerId).first();
-  if (!row) return { filled: [] };
+  if (!row) return { filled: [], changes: {} };
 
   const current = Object.fromEntries(
     Object.entries(INTAKE_COLUMNS).map(([key, col]) => [key, row[col] || ""])
@@ -277,7 +435,7 @@ async function applyIntake(db, customerId, text) {
 
   const changes = mergeIntake(current, fields);
   const keys = Object.keys(changes);
-  if (!keys.length) return { filled: [] };
+  if (!keys.length) return { filled: [], changes: {} };
 
   const sets = keys.map((k) => `${INTAKE_COLUMNS[k]} = ?`);
   const binds = keys.map((k) => changes[k]);
@@ -296,13 +454,9 @@ async function applyIntake(db, customerId, text) {
       .run();
   }
 
-  const body = "系统从顾客讯息读到：" + keys.map((k) => `${k}=${changes[k]}`).join("、");
-  await db
-    .prepare("INSERT INTO notes (id, customer_id, author, body, kind, ts, seq) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(`intake-${customerId}-${nextSeq()}`, customerId, SYSTEM_ACTOR, body, "note", nowIso(), nextSeq())
-    .run();
+  await addNote(db, customerId, "系统从顾客讯息读到：" + keys.map((k) => `${k}=${changes[k]}`).join("、"));
 
-  return { filled: keys };
+  return { filled: keys, changes };
 }
 
 /**
@@ -311,7 +465,7 @@ async function applyIntake(db, customerId, text) {
  * 阶段 A 只做「收进来、写进去」：不自动回覆、不改阶段、不动 needs_reply、
  * 不判断要不要转真人。那些等后面的阶段。
  */
-export async function ingestMessage(db, raw) {
+export async function ingestMessage(db, raw, env = null) {
   const platformMsgId = String(raw?.id ?? "").trim();
   if (!platformMsgId) return { status: "skipped", reason: "missing_id" };
 
@@ -364,8 +518,23 @@ export async function ingestMessage(db, raw) {
 
   // 顾客回填的表格顺手读进个案栏位。只对新收到的、顾客发来的讯息做。
   let filled = [];
+  let receipt = null;
   if (inserted && direction === "in") {
-    ({ filled } = await applyIntake(db, customer.id, String(raw?.text ?? "")));
+    const text = String(raw?.text ?? "");
+    const intake = await applyIntake(db, customer.id, text);
+    filled = intake.filled;
+
+    // 顾客自己填了机号就查一下在不在清单里；没填就试着从他讲的地方对回来
+    const matched = await applyMachineMatch(db, customer.id, text, intake.changes?.machineId || null);
+    filled = [...filled, ...matched.filled];
+
+    // 附带图片或 PDF 的，再交给模型读一次收据。
+    // 没有 env 就是没有 API key 可用（测试、或还没设定）—— 跳过，不当成错误。
+    if (env && raw?.media?.dataBase64) {
+      const result = await applyReceipt(db, customer.id, raw.media, env);
+      receipt = result.receipt;
+      filled = [...filled, ...result.filled];
+    }
   }
 
   return {
@@ -374,6 +543,8 @@ export async function ingestMessage(db, raw) {
     customerId: customer.id,
     customerCreated,
     filled,
+    ...(receipt ? { receipt } : {}),
+    ...(raw?.mediaSkipped ? { mediaSkipped: String(raw.mediaSkipped) } : {}),
     ts: iso,
   };
 }
@@ -643,7 +814,7 @@ export async function handleWhatsApp(request, env, url) {
     if (list.length === 0) return jsonResponse({ ok: false, error: "no_messages" }, 400);
 
     const results = [];
-    for (const item of list) results.push(await ingestMessage(env.DB, item));
+    for (const item of list) results.push(await ingestMessage(env.DB, item, env));
 
     const count = (s) => results.filter((r) => r.status === s).length;
     return jsonResponse({
