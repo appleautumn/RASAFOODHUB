@@ -232,6 +232,20 @@ test("产草稿不会送出、也不会改个案", async () => {
   assert.equal(out.n, 0, "产草稿不该产生任何送出的讯息");
 });
 
+test("非工作时间的旗子要跟着草稿一起送进 prompt", async () => {
+  const { env } = setup({ ANTHROPIC_API_KEY: "sk-test" });
+  const ai = stubAi("ok");
+  try {
+    const r = await call(env, "POST", "/api/ai/draft", { text: "dah bayar tapi tak keluar" });
+    // 不去动时钟 —— 只验「画面上看到的旗子」跟「送进模型的 prompt」是同一件事。
+    // 之前的 bug 就是这两边不一致：画面标了非工作时间，模型完全不知道。
+    const told = /# 现在是非工作时间/.test(ai.seen[0].body.system);
+    assert.equal(told, r.body.afterHours, "画面标了非工作时间，prompt 里却没讲");
+  } finally {
+    ai.restore();
+  }
+});
+
 test("空讯息不呼叫 AI", async () => {
   const { env } = setup({ ANTHROPIC_API_KEY: "sk-test" });
   const r = await call(env, "POST", "/api/ai/draft", { text: "   " });

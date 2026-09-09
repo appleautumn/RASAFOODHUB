@@ -6,7 +6,7 @@
  *   2. 资料齐了就把个案推到核实，并留下一件事给人做
  *   3. 人把两个系统的状态填回来之后，说清楚**下一步该往哪走**
  *
- * 刻意不自动送讯息、不自动改 FINEXUS、不自动出货。
+ * 刻意不自动送讯息、不自动改付款闸道状态、不自动出货。
  * 出货是花钱的动作，永远由人按下去。
  */
 
@@ -23,7 +23,7 @@ export const FIELD_LABELS = {
   receiptAmount: "收据金额",
 };
 
-/** 收据上读到的付款方式。核实时决定去 FINEXUS 的哪一边对帐。 */
+/** 收据上读到的付款方式。核实时决定去闸道后台的哪一边对帐。 */
 export const PAYMENT_LABELS = { qr: "QR / DuitNow", card: "刷卡", cash: "现金" };
 
 /** 顾客那边看到的表格用英文，问缺项时也用英文，跟表格对得上 */
@@ -83,7 +83,7 @@ export function caseStatus(c) {
       who: "staff",
       missing: [],
       needsReceipt: false,
-      summary: `资料齐了。要查${finexus === "unknown" ? " FINEXUS" : ""}${finexus === "unknown" && machine === "unknown" ? " 与" : ""}${machine === "unknown" ? "机器系统" : ""}状态。`,
+      summary: `资料齐了。要查${finexus === "unknown" ? "付款闸道" : ""}${finexus === "unknown" && machine === "unknown" ? "与" : ""}${machine === "unknown" ? "机器系统" : ""}状态。`,
     };
   }
 
@@ -107,7 +107,9 @@ function describeCollecting(missing, receipt) {
 /**
  * 两个系统状态凑起来，个案该往哪走。
  *
- * FINEXUS 是钱有没有真的收到，机器系统是货有没有真的出去。
+ * 付款闸道说钱有没有真的收到，机器系统说货有没有真的出去。
+ * 栏位名沿用 finexus_status，但实际上有三家闸道（FINEXUS / GHL / COHERENT），
+ * 哪一台走哪一家要看机器 —— 所以措辞一律讲「付款闸道」，不写死某一家。
  * 只有「钱收到了、货没出去」才是我们欠顾客一件商品 —— 那才远端出货。
  *
  *   captured + pending/faulty  → 钱收了货没出：远端出货（要顾客在现场）
@@ -126,14 +128,14 @@ export function verifyDecision({ machineStatus, finexusStatus, onSite }) {
   if (finexus === "void" || finexus === "reverse") {
     return {
       outcome: "refund_check", who: "customer", stage: "refund_check", scenario: "void_reverse",
-      summary: `FINEXUS ${finexus}：这笔没有成功扣款，请顾客查银行自动退款。`,
+      summary: `付款闸道回报 ${finexus}：这笔没有成功扣款，请顾客查银行自动退款。`,
     };
   }
 
   if (finexus === "refunded") {
     return {
       outcome: "refund_check", who: "customer", stage: "refund_check", scenario: "already_refunded",
-      summary: "FINEXUS refunded：款项已退，请顾客查帐户。",
+      summary: "付款闸道回报 refunded：款项已退，请顾客查帐户。",
     };
   }
 
@@ -155,7 +157,7 @@ export function verifyDecision({ machineStatus, finexusStatus, onSite }) {
 
   return {
     outcome: "ready_to_remote", who: "staff", stage: "pending_remote", scenario: "captured_on_site",
-    summary: `FINEXUS captured、机器 ${machine}：确认顾客在现场后，由真人远端出货。`,
+    summary: `付款闸道 captured、机器 ${machine}：确认顾客在现场后，由真人远端出货。`,
   };
 }
 
@@ -176,7 +178,7 @@ export function caseSummary(c) {
     line("收据", [str(c.receiptDate), str(c.receiptTime), str(c.receiptAmount) && `RM ${c.receiptAmount}`].filter(Boolean).join(" ")),
     line("付款方式", PAYMENT_LABELS[str(c.paymentType)] || ""),
     line("机器系统", c.machineStatus),
-    line("FINEXUS", c.finexusStatus),
+    line("付款闸道", c.finexusStatus),
     `目前：${status.summary}`,
   ].join("\n");
 }

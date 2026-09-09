@@ -107,7 +107,7 @@ export const DEFAULT_SCENARIOS = [
     label: "资料与收据都齐了",
     when: "四项齐全，收据也拿到了。",
     reply: "资料都收到了，谢谢你的耐心 🙏 我现在帮你核对系统，有结果马上回你。",
-    next: "阶段改「核实中」，并开一件事给同事：查 FINEXUS 与机器系统状态。",
+    next: "阶段改「核实中」，并开一件事给同事：查这台机器所属的付款闸道后台与机器系统状态。",
     escalate: false,
   },
 
@@ -123,7 +123,7 @@ export const DEFAULT_SCENARIOS = [
   {
     id: "captured_on_site",
     label: "款项已收、货没出、顾客在现场",
-    when: "FINEXUS captured 且机器系统 pending / faulty。先确认顾客还在机器旁边。",
+    when: "付款闸道显示 captured 且机器系统 pending / faulty。先确认顾客还在机器旁边。",
     reply: "查到了，这笔款项有收到，但机器那边没有出货 🙏 请问你现在还在机器旁边吗？在的话我这边马上帮你重新出货。",
     next: "顾客说在 → 阶段改「待远端出货」，转真人执行 remote。远端出货一律由真人按。",
     escalate: false,
@@ -147,7 +147,7 @@ export const DEFAULT_SCENARIOS = [
   {
     id: "both_success_conflict",
     label: "两边系统都显示成功",
-    when: "FINEXUS captured，机器系统却是 delivered。",
+    when: "付款闸道显示 captured，机器系统却是 delivered。",
     reply: "谢谢你的耐心 🙏 你这笔我需要再查一下现场纪录，稍后由同事回覆你。",
     next: "阶段改「已升级真人」。绝对不要再出一次货 —— 系统说已出，重出会是第二次损失。",
     escalate: true,
@@ -155,7 +155,7 @@ export const DEFAULT_SCENARIOS = [
   {
     id: "void_reverse",
     label: "款项没有成功扣走",
-    when: "FINEXUS 状态是 void 或 reverse。",
+    when: "付款闸道状态是 void 或 reverse。",
     reply: "查过了，这笔款项其实没有成功扣款 🙏 麻烦你帮忙看一下银行户口，通常会在几个工作天内自动退回。",
     next: "阶段改「退款检查」。不要承诺退款日期。",
     escalate: false,
@@ -163,7 +163,7 @@ export const DEFAULT_SCENARIOS = [
   {
     id: "already_refunded",
     label: "系统显示已退款",
-    when: "FINEXUS 状态是 refunded。",
+    when: "付款闸道状态是 refunded。",
     reply: "系统显示这笔已经退款了 🙏 麻烦你查一下户口，如果几个工作天后还是没看到，跟我说一声，我帮你再跟进。",
     next: "阶段改「退款检查」。",
     escalate: false,
@@ -352,7 +352,7 @@ export function withNewDefaults(scenarios) {
  * 顺序是刻意的：先讲身分与硬规定，再给知识，最后才给剧本与个案。
  * 硬规定放最前面，是因为後面的内容里有大量范本，容易把模型带成「照抄」。
  */
-export function buildSystemPrompt({ ai = {}, scenarios = DEFAULT_SCENARIOS, caseSummary = "", missing = [], suggestedScenarioId = "" } = {}) {
+export function buildSystemPrompt({ ai = {}, scenarios = DEFAULT_SCENARIOS, caseSummary = "", missing = [], suggestedScenarioId = "", afterHours = false } = {}) {
   const suggested = scenarios.find((s) => s.id === suggestedScenarioId);
 
   const parts = [
@@ -393,6 +393,15 @@ export function buildSystemPrompt({ ai = {}, scenarios = DEFAULT_SCENARIOS, case
     if (suggested.escalate) {
       parts.push(`这一条标了「转真人」：只回一句致歉与「同事会跟你联络」，不要处理内容。`);
     }
+  }
+
+  if (afterHours) {
+    parts.push(
+      ``,
+      `# 现在是非工作时间`,
+      `工作时间是 MON-FRI 8AM-6PM，SAT-SUN 休息。回覆里要顺带讲一句「现在非工作时间，回覆会慢一点，但一定会跟进」，`,
+      `用顾客的语言讲，不要照抄。该问的资料还是照问。`,
+    );
   }
 
   if (missing.length) {

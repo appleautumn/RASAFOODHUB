@@ -94,7 +94,7 @@ test("摘要每一行都在，缺的写破折号", () => {
   const text = caseSummary({ name: "Ali" });
   assert.match(text, /Name：Ali/);
   assert.match(text, /ID Machine：—/);
-  assert.match(text, /FINEXUS：—/);
+  assert.match(text, /付款闸道：—/);
   assert.match(text, /目前：/);
 });
 

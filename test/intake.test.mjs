@@ -118,3 +118,37 @@ test("空讯息回四项全缺，不会炸", () => {
   assert.deepEqual(r.missing, REQUIRED_FIELDS);
   assert.equal(r.labelled, 0);
 });
+
+/* ------------------------- 整张表打成一行 ------------------------- */
+
+test("顾客把整张表打成一行，每一项都要读得出来", () => {
+  const { fields } = extractIntake("Name : Ali Test Location : habitat Item no : 23");
+  assert.equal(fields.name, "Ali Test", "姓名不该吞掉后面整串");
+  assert.equal(fields.locationName, "habitat");
+  assert.equal(fields.itemNo, "23");
+});
+
+test("一行式：机号与金额也读得到", () => {
+  const { fields, missing } = extractIntake(
+    "Name : Ali bin Ahmad Location : Hospital Selayang ID Machine : 25312025 Item no : 23 Amount : RM 9.90"
+  );
+  assert.equal(fields.name, "Ali bin Ahmad");
+  assert.equal(fields.locationName, "Hospital Selayang");
+  assert.equal(fields.machineId, "25312025");
+  assert.equal(fields.itemNo, "23");
+  assert.equal(fields.receiptAmount, "9.90");
+  assert.deepEqual(missing, []);
+});
+
+test("一行式：括号说明那种写法也拆得开", () => {
+  const { fields } = extractIntake("Name : Siti ID Machine ( Shown on the screen left side) : RFH012 Item no : 5");
+  assert.equal(fields.name, "Siti");
+  assert.equal(fields.machineId, "RFH012");
+  assert.equal(fields.itemNo, "5");
+});
+
+test("一行式不会把普通句子拆坏", () => {
+  assert.deepEqual(extractIntake("时间到了: 我等很久了").fields, {});
+  const { fields } = extractIntake("Name : Ali 我等很久了，请问什么时候好");
+  assert.equal(fields.name, "Ali 我等很久了，请问什么时候好");
+});

@@ -214,6 +214,13 @@ async function touchCustomerTimestamps(db, customerId, iso, direction) {
   if (direction === "in") {
     sets.push("last_customer_message_at = MAX(COALESCE(last_customer_message_at, ''), ?)");
     binds.push(iso);
+    // 顾客讲话了就排进「需要回覆」。少了这一步，进线的人全部堆在「新进线」，
+    // 看板上分不出谁在等 —— 而「谁在等」正是这张看板唯一要回答的问题。
+    sets.push("needs_reply = 1");
+  } else {
+    // 我们回了就把旗子放下。判断依据是「最后一则是谁讲的」，
+    // 不是「有没有人点过什么」—— 点击会忘，讯息不会。
+    sets.push("needs_reply = 0");
   }
 
   // 这一列确实被改动了，updated_at / updated_by 就要照实反映，
@@ -356,7 +363,7 @@ async function addNote(db, customerId, body) {
  *
  * 只在 machine_id 还空着的时候做，而且只在**很有把握**的时候写 ——
  * 「Taman Melawati」有两台的时候宁可留空让人问一句，也不要填一台错的。
- * 填错的机号会一路带到 FINEXUS 核实才被发现，那时候顾客已经走了。
+ * 填错的机号会一路带到付款闸道核实才被发现，那时候顾客已经走了。
  *
  * 顺便查一件事：顾客自己打的机号如果不在清单里，留一条 note。
  * 那多半是打错，早点看到早点问。

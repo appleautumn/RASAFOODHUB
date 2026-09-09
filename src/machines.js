@@ -2,7 +2,7 @@
  * 机器清单：把顾客讲的地方，对回一台真实存在的机器。
  *
  * 为什么值得一个模组：Location 与 Machine ID 一直是顾客手打的自由文字，
- * 而打错的机号会一路带到 FINEXUS 核实才被发现 —— 那时候要重问、重等，
+ * 而打错的机号会一路带到付款闸道核实才被发现 —— 那时候要重问、重等，
  * 顾客已经不在机器旁边了。
  *
  * 这里的比对刻意**保守**：只有很有把握的时候才自动填。
@@ -75,9 +75,11 @@ export function matchMachine(text, machines = []) {
   if (!said.size) return none;
 
   const scored = usable
-    .map((m) => ({ machine: m, score: bestScore(m, said) }))
+    .map((m) => ({ machine: m, ...bestScore(m, said) }))
     .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score);
+    // **先看对上几个词**，再看比例。顾客讲「habitat black」时，
+    // 「habitat」这个单字别名两台都是满分，只有「对上两个词」分得出是黑机。
+    .sort((a, b) => b.matched - a.matched || b.score - a.score);
 
   if (!scored.length) return none;
 
@@ -88,23 +90,36 @@ export function matchMachine(text, machines = []) {
   const candidates = scored.filter((s) => s.score >= 0.34).slice(0, 3).map((s) => s.machine);
 
   // 有把握 = 分数够高，而且**明显**比第二名好。
-  // 两个点位名字很像的时候（SK / SMK Taman Melawati），宁可问一句。
-  const confident = top.score >= 0.6 && (!second || top.score - second.score >= 0.25);
+  // 「明显」有两种：分数拉开，或者对上的词更多。后者是为了单字别名 ——
+  // 两台都有别名 "mahsa" 的话，两台都是满分，连「mahsa white」都会变成平手。
+  // 比对上几个词，才分得出谁比较贴近顾客真正讲的那句话。
+  const confident =
+    top.score >= 0.6 && (!second || top.score - second.score >= 0.25 || top.matched > second.matched);
 
   return { machine: confident ? top.machine : null, candidates, by: "location" };
 }
 
-/** 这台机器的哪个名字最像顾客讲的，分数多少 */
+/**
+ * 这台机器的哪个名字最像顾客讲的。
+ *
+ * 回传 { score, matched }：
+ *   score   这台的名字被讲到几成。顾客讲 "selayang" 对上
+ *           "Hospital Selayang Lobby" 是 1/3，讲 "hospital selayang" 是 2/3。
+ *           别名就是为了补这一段 —— 常用的简称写进别名，分数自然变高。
+ *   matched 实际对上几个词。单字别名永远是满分，光看 score 分不出
+ *           「mahsa」跟「mahsa white」谁比较贴近，所以排序时 matched 优先。
+ */
 function bestScore(machine, said) {
-  let best = 0;
+  let best = { score: 0, matched: 0 };
   for (const name of namesOf(machine)) {
     const want = tokens(name);
     if (!want.length) continue;
     const hit = want.filter((t) => said.has(t)).length;
-    // 用「这台的名字被讲到几成」当分数：顾客讲 "selayang" 对上
-    // "Hospital Selayang Lobby" 是 1/3，讲 "hospital selayang" 是 2/3。
-    // 别名就是为了补这一段 —— 常用的简称写进别名，分数自然变高。
-    best = Math.max(best, hit / want.length);
+    const score = hit / want.length;
+    // 同样先看对上几个词：解释了顾客更多句子的那个名字才是比较贴的
+    if (hit > best.matched || (hit === best.matched && score > best.score)) {
+      best = { score, matched: hit };
+    }
   }
   return best;
 }

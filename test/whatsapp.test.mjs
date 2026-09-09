@@ -240,7 +240,7 @@ test("收到较新的讯息，时间会往前推", async () => {
     "2024-04-05T19:34:38.000Z");
 });
 
-test("这个阶段不做任何自动行为：needs_reply / stage 都不会被动到", async () => {
+test("顾客来讯会排进「需要回覆」，但阶段与优先级不动", async () => {
   const db = createTestDb();
   db._exec(`INSERT INTO customers (id, name, phone, phone_raw, updated_at, stage, needs_reply, priority)
             VALUES ('cust-1', '旧客', '60123456789', '012-3456789',
@@ -249,9 +249,32 @@ test("这个阶段不做任何自动行为：needs_reply / stage 都不会被动
   await ingestMessage(db, msg());
 
   const c = db._row("SELECT * FROM customers");
-  assert.equal(c.needs_reply, 0, "needs_reply 被动到了");
+  // 顾客讲话了就是在等回覆。少了这一步，进线的人全部堆在「新进线」，
+  // 看板分不出谁在等 —— 而那正是这张看板唯一要回答的问题。
+  assert.equal(c.needs_reply, 1, "顾客来讯没有排进需要回覆");
+  // 阶段与优先级还是人决定的，收讯不碰
   assert.equal(c.stage, "verifying", "stage 被动到了");
   assert.equal(c.priority, "high", "priority 被动到了");
+});
+
+test("我们回了就把「需要回覆」放下", async () => {
+  const db = createTestDb();
+  await ingestMessage(db, msg({ id: "in-1" }));
+  assert.equal(db._row("SELECT * FROM customers").needs_reply, 1);
+
+  await ingestMessage(db, msg({ id: "out-1", fromMe: true }));
+  assert.equal(db._row("SELECT * FROM customers").needs_reply, 0, "回过了还留着旗子，队列会一直有人");
+});
+
+test("重复的讯息不会把旗子重新举起来", async () => {
+  const db = createTestDb();
+  await ingestMessage(db, msg({ id: "in-1" }));
+  await ingestMessage(db, msg({ id: "out-1", fromMe: true }));
+
+  // 桥接机重连补送同一则进讯 —— 已经处理过了，不该让它看起来又在等回覆
+  const again = await ingestMessage(db, msg({ id: "in-1" }));
+  assert.equal(again.status, "duplicate");
+  assert.equal(db._row("SELECT * FROM customers").needs_reply, 0);
 });
 
 /* ========================= secret 把关 ========================= */

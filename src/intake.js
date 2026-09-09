@@ -11,7 +11,7 @@
  * 大部分人会照着填回来，所以这里**只做确定性的解析**，不猜。
  * 有标签就取标签后面的值；没有标签就当作没提供 —— 宁可再问一次，
  * 也不要把一句「我在 KLCC 那台」里的字硬塞进 machine_id。
- * 填错的资料会一路带到 FINEXUS 核实，那时候错的成本比多问一句高太多。
+ * 填错的资料会一路带到付款闸道核实，那时候错的成本比多问一句高太多。
  *
  * 这个档案是纯函式，不碰资料库、不碰 env，所以 whatsapp.js 引它
  * 不会破坏「整包搬走」的性质。
@@ -84,23 +84,83 @@ function normalizeLabel(s) {
     .trim();
 }
 
-/** 把一行拆成 { field, value }；不是标签行就回 null */
-function splitLabelled(line) {
-  let cut = -1;
-  for (const sep of SEPARATORS) {
-    const i = line.indexOf(sep);
-    if (i > 0 && (cut === -1 || i < cut)) cut = i;
-  }
-  if (cut === -1) return null;
-
-  const head = normalizeLabel(line.slice(0, cut));
-  // 标签不会是一整句话。太长的多半是句子里刚好有冒号。
+/** 一段文字的结尾是不是某个已知标签 */
+function matchLabelAtEnd(text) {
+  const head = normalizeLabel(text);
   if (!head || head.length > 40) return null;
+  return LABEL_INDEX.find(({ label }) => head === label || head.endsWith(" " + label)) || null;
+}
 
-  const hit = LABEL_INDEX.find(({ label }) => head === label || head.endsWith(" " + label) || head.startsWith(label + " "));
-  if (!hit) return null;
+/**
+ * 这个标签在原始字串里从哪个字开始。
+ *
+ * 用标签的**第一个字**往回找，而不是数最后几个字 —— 因为
+ * "ID Machine ( Shown on the screen left side)" 正规化之后只剩 "id machine"，
+ * 数字数会数到括号里去。
+ */
+function labelStartIndex(segment, label) {
+  const first = label.split(" ")[0];
+  const re = new RegExp(`(^|[^a-z0-9一-鿿])(${first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  let last = -1;
+  let m;
+  while ((m = re.exec(segment)) !== null) last = m.index + m[1].length;
+  return last;
+}
 
-  return { field: hit.field, value: line.slice(cut + 1).trim() };
+/**
+ * 一行里所有的「标签 : 值」。
+ *
+ * 为什么要扫整行、不是找到第一个冒号就收工：顾客常常把整张表打成一行
+ * （`Name : Ali Location : habitat Item no : 23`）。只看第一个冒号的话，
+ * 姓名会把后面整串吞掉，地点与品项直接消失 —— 而且不会报错，
+ * 画面上只会出现一个很长的名字。这种安静的失败最难发现。
+ */
+function scanLine(line) {
+  const found = [];
+  let pos = 0;
+
+  while (pos < line.length) {
+    // 下一个分隔符
+    let cut = -1;
+    for (const sep of SEPARATORS) {
+      const i = line.indexOf(sep, pos);
+      if (i > pos && (cut === -1 || i < cut)) cut = i;
+    }
+    if (cut === -1) break;
+
+    const hit = matchLabelAtEnd(line.slice(pos, cut));
+    if (!hit) {
+      pos = cut + 1;
+      continue;
+    }
+
+    // 值从分隔符后面开始，到**下一个标签开头**为止
+    const valueStart = cut + 1;
+    let valueEnd = line.length;
+    let scanFrom = valueStart;
+    while (scanFrom < line.length) {
+      let nextSep = -1;
+      for (const sep of SEPARATORS) {
+        const i = line.indexOf(sep, scanFrom);
+        if (i > scanFrom && (nextSep === -1 || i < nextSep)) nextSep = i;
+      }
+      if (nextSep === -1) break;
+      const nextHit = matchLabelAtEnd(line.slice(valueStart, nextSep));
+      if (nextHit) {
+        const at = labelStartIndex(line.slice(valueStart, nextSep), nextHit.label);
+        if (at > 0) {
+          valueEnd = valueStart + at;
+          break;
+        }
+      }
+      scanFrom = nextSep + 1;
+    }
+
+    found.push({ field: hit.field, value: line.slice(valueStart, valueEnd).trim() });
+    pos = valueEnd;
+  }
+
+  return found;
 }
 
 /* --------------------------- 值的整理 --------------------------- */
@@ -204,25 +264,28 @@ export function extractIntake(text) {
   let labelled = 0;
 
   for (let i = 0; i < lines.length; i++) {
-    const parsed = splitLabelled(lines[i]);
-    if (!parsed) continue;
-    labelled++;
+    const segments = scanLine(lines[i]);
+    if (!segments.length) continue;
+    labelled += segments.length;
 
-    let raw = parsed.value;
-    // 标签自己一行、值在下一行。下一行如果本身是标签就不吃。
-    if (!raw) {
-      for (let j = i + 1; j < lines.length; j++) {
-        if (!lines[j]) continue;
-        if (splitLabelled(lines[j])) break;
-        raw = lines[j];
-        i = j;
-        break;
+    for (const [n, parsed] of segments.entries()) {
+      let raw = parsed.value;
+      // 标签自己一行、值在下一行。只有这一行最后一个标签才往下看，
+      // 而且下一行本身是标签的话就不吃。
+      if (!raw && n === segments.length - 1) {
+        for (let j = i + 1; j < lines.length; j++) {
+          if (!lines[j]) continue;
+          if (scanLine(lines[j]).length) break;
+          raw = lines[j];
+          i = j;
+          break;
+        }
       }
-    }
 
-    const value = TIDY[parsed.field](raw);
-    // 先到先赢：顾客重发时，第一次填的通常才是原始那笔
-    if (value && !fields[parsed.field]) fields[parsed.field] = value;
+      const value = TIDY[parsed.field](raw);
+      // 先到先赢：顾客重发时，第一次填的通常才是原始那笔
+      if (value && !fields[parsed.field]) fields[parsed.field] = value;
+    }
   }
 
   // 没有标签也能确定的两种形状：RM 金额、完整日期。

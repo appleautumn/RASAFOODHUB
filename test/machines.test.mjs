@@ -265,3 +265,31 @@ test("机器清单是空的时候，收讯完全不受影响", async () => {
   const row = await db.prepare("SELECT machine_id FROM customers WHERE id = ?").bind(r.customerId).first();
   assert.equal(row.machine_id, "");
 });
+
+/* --------------------- 单字别名不该稳拿满分 --------------------- */
+
+const mahsa = [
+  M("25312025", "MAHSA UNIVERSITY (White)", { aliases: "habitat\nmahsa habitat white\nmahsa white\nmahsa putih" }),
+  M("2509010184", "MAHSA UNIVERSITY (Black)", { aliases: "habitat\nmahsa habitat black\nmahsa black\nmahsa hitam" }),
+];
+
+test("两台共用的单字别名 —— 问一句，不猜", () => {
+  for (const t of ["habitat", "mahsa"]) {
+    assert.equal(matchMachine(t, mahsa).machine, null, t);
+    assert.equal(matchMachine(t, mahsa).candidates.length, 2, t);
+  }
+});
+
+test("讲得更具体就分得出来 —— 靠对上几个词，不是靠比例", () => {
+  // 两台都有单字别名 "habitat"，比例都是满分。
+  // 只有「对上两个词」这件事分得出顾客讲的是哪一台。
+  assert.equal(matchMachine("habitat black", mahsa).machine.machineId, "2509010184");
+  assert.equal(matchMachine("mahsa white", mahsa).machine.machineId, "25312025");
+  assert.equal(matchMachine("mahsa hitam", mahsa).machine.machineId, "2509010184");
+  assert.equal(matchMachine("mahsa habitat white", mahsa).machine.machineId, "25312025");
+});
+
+test("放宽之后，名字很像的两台还是不自动填", () => {
+  assert.equal(matchMachine("taman melawati", fleet).machine, null);
+  assert.equal(matchMachine("smk taman melawati", fleet).machine.machineId, "RFH021");
+});

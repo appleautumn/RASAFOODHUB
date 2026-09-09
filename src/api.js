@@ -413,6 +413,7 @@ export async function handleApi(request, env, url, user) {
       caseSummary: summary,
       missing: result.missing,
       suggestedScenarioId: result.scenario,
+      afterHours: result.afterHours,
     });
 
     const drafted = await draftReply(env, { system, userText: text });

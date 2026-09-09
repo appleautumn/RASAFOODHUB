@@ -92,3 +92,17 @@ test("没有个案也组得出 prompt", () => {
 test("剧本 key 没被改掉", () => {
   assert.equal(PLAYBOOK_KEY, "playbook.scenarios");
 });
+
+test("非工作时间要讲进 prompt，不能只显示在画面上", () => {
+  const off = buildSystemPrompt({ afterHours: true });
+  assert.match(off, /非工作时间/);
+  assert.match(off, /回覆会慢一点/);
+
+  const on = buildSystemPrompt({ afterHours: false });
+  assert.doesNotMatch(on, /# 现在是非工作时间/);
+});
+
+test("剧本不写死 FINEXUS —— 三家闸道，哪台走哪家看机器", () => {
+  const text = JSON.stringify(DEFAULT_SCENARIOS);
+  assert.doesNotMatch(text, /FINEXUS/, "措辞写死某一家闸道，对走 GHL / COHERENT 的机器就是错的");
+});
