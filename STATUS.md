@@ -1,9 +1,32 @@
 # Rasa CRM × Cloudflare Access — 进度快照
 
-> 2026-09-02 · 分支 `claude/cloudflare-access-setup-hh1wml` · 8 个 commit 已推送
-> 测试 **47 项全过**（`npm test`，不需要网路与 Cloudflare 帐号）
+> 2026-09-24 · 分支 `claude/cloudflare-access-setup-hh1wml`
+> 测试 **49 项全过**（`npm test`，不需要网路与 Cloudflare 帐号）
 
-**一句话：程式码全部就绪，卡在一个点 —— 我没有你 Cloudflare 帐号的凭证。**
+## 🟢 已上线
+
+**<https://rasa-crm.appleautumn-hhl.workers.dev>**
+
+Email OTP 登入已实际验证通过：输入 email → 收 Cloudflare 验证码 → 进入 CRM，
+右上角显示身分与 `admin` 标签，左侧「团队活动」可见。
+
+| | |
+|---|---|
+| Cloudflare 帐号 | `Appleautumn.hhl@gmail.com's Account` |
+| team domain | `wandering-thunder-a8ee.cloudflareaccess.com` |
+| D1 `rasa-crm` | `234e801c-…` |
+| 可登入的 email | `rasafoodhubplt@gmail.com`、`appleautumn.hhl@gmail.com`（both admin）|
+
+### 还没做的
+
+1. **搬 artifact 的既有资料** —— CRM 目前是空的，脚本已备好（见下）
+2. **自订网域** —— 现用 workers.dev。`rasafoodhub.com` 的 DNS 在 systemdns.com，
+   要搬到 Cloudflare 才能用，会动到线上网站与 email，另择时机
+3. **WhatsApp / Baileys 扫码桥接** —— 未开始。Workers 跑不了 Baileys（需长驻连线）
+
+---
+
+## 以下为 9/2 的纪录（问题当时已解决）
 
 ---
 
