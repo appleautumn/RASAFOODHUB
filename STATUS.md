@@ -19,7 +19,9 @@ Email OTP 登入已实际验证通过：输入 email → 收 Cloudflare 验证�
 
 ### 还没做的
 
-1. **搬 artifact 的既有资料** —— CRM 目前是空的，脚本已备好（见下）
+1. ~~搬 artifact 的既有资料~~ —— **放弃**。原本那个 Claude 对话已找不到，
+   资料随着 artifact 的执行环境一起没了，无法复原。新系统从零开始。
+   （`scripts/import-data.mjs` 与迁移文件保留，万一日后找回那个对话还能用）
 2. **自订网域** —— 现用 workers.dev。`rasafoodhub.com` 的 DNS 在 systemdns.com，
    要搬到 Cloudflare 才能用，会动到线上网站与 email，另择时机
 3. **WhatsApp / Baileys 扫码桥接** —— 未开始。Workers 跑不了 Baileys（需长驻连线）
