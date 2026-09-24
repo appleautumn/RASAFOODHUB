@@ -46,11 +46,23 @@ npm run dev
 2. 贴上这段，按 Enter：
 
 ```js
-copy(JSON.stringify(Object.fromEntries(await Promise.all(
-  ["rasa-crm:main", "rasa-crm:log", "rasa-crm:apps"].map(async (k) =>
-    [k, (await window.storage.get(k))?.value ?? null])
-))))
+(async () => {
+  const out = {};
+  for (const k of ["rasa-crm:main", "rasa-crm:log", "rasa-crm:apps"]) {
+    try { out[k] = (await window.storage.get(k))?.value ?? null; }
+    catch (e) { out[k] = null; }          // 某个 key 不存在不该拖垮其它的
+  }
+  console.table(Object.fromEntries(Object.entries(out).map(
+    ([k, v]) => [k, v ? v.length + " 字元" : "（空的）"])));
+  const json = JSON.stringify(out);
+  try { copy(json); console.log("✅ 已复制到剪贴簿，长度", json.length); }
+  catch { console.log("复制失败，手动选取下面这段：\n", json); }
+})();
 ```
+
+跑完 `console.table` 会先列出每个 key 多大，让你一眼看出有没有捞到东西。
+`rasa-crm:main` 是顾客名单，通常最大；三个都显示「（空的）」就表示
+那个 artifact 里本来就没资料，这步可以跳过。
 
 3. 资料已经复制到剪贴簿了。在专案资料夹建一个 `export.json`，贴上、存档
 4. 转成 SQL 并汇入：
