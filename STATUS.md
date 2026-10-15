@@ -17,6 +17,18 @@ Email OTP 登入已实际验证通过：输入 email → 收 Cloudflare 验证�
 | D1 `rasa-crm` | `234e801c-…` |
 | 可登入的 email | `rasafoodhubplt@gmail.com`、`appleautumn.hhl@gmail.com`（both admin）|
 
+### AI 售后草稿：已验证可用（2026-10-15）
+
+worker 代打 Anthropic（key 存 Cloudflare secret，不进浏览器），
+实测顾客讯息 `Saya dah bayar tapi barang tak keluar` → AI 依 `replyRules`
+判断要送收资料表格，依 `toneExamples` 的语气产生马来文/英文夹杂的回覆。
+
+目前流程：顾客讯息手动贴进 CRM → AI 产草稿 → 人确认後送出。
+WhatsApp 自动收发尚未接上。
+
+已知取舍：AI 会**改写**标准表格以配合顾客语言。要一字不差就把它
+移到「自动化与测试」的关键字规则，AI 不碰。
+
 ### 还没做的
 
 1. ~~搬 artifact 的既有资料~~ —— **放弃**。原本那个 Claude 对话已找不到，
