@@ -222,6 +222,18 @@ FINEXUS 付款闸道状态：captured / void / reverse / refunded。
 个案结束时才用一句感谢 + 欢迎再来。
 不谈折扣、不谈补偿金额、不承诺退款时间。
 价格、库存、健康或成分声明一律不自己回答。`,
+  // 一行一个地点。这份清单同时供三处使用：
+  //   1. 新增／编辑顾客时的「地点」下拉选单
+  //   2. 回覆文案里的 {{LOCATIONS}}（会展开成编号清单给顾客选）
+  //   3. 告诉 AI 哪些地点是存在的
+  locations: `Kolej Vokasional Setapak
+Hospital Selayang Lobby
+Pusat Bandar Puchong
+UiTM Shah Alam Blok C
+Stesen LRT Kelana Jaya
+Kilang Sunway Damansara
+SMK Taman Melawati
+Klinik Kesihatan Kepong`,
   toneExamples: `a-Hi, Thank you for your message ☺️
 
 *Please fill in the form if you have make payment but item failed to disburse*
@@ -244,6 +256,7 @@ c-Thank you for your supporting! We look forward to see you again! ❤️`,
 };
 
 const AI_BLOCKS = [
+  { key: "locations", label: "机器地点清单" },
   { key: "product", label: "产品知识" },
   { key: "replyRules", label: "回覆规则" },
   { key: "salesRules", label: "销售规则" },
@@ -324,7 +337,25 @@ const DEFAULT_KEYWORD_RULES = [
     id: "kw_payment",
     name: "付款关键字 → 发收集表格",
     keywords: ["payment", "paid", "byr", "bayar"],
-    reply: DEFAULT_AI.toneExamples.split("b-You may")[0].replace(/^a-/, "").trim(),
+    // {{LOCATIONS}} 送出前会展开成编号清单，顾客回数字就好
+    reply: `Hi, Thank you for your message ☺️
+
+*Please fill in the form if you have make payment but item failed to disburse*
+
+Name :
+
+Location — *reply the number* :
+{{LOCATIONS}}
+
+ID Machine ( Shown on the screen left side) :
+Item no :
+
+Send us your *TRANSACTION RECEIPT*
+
+We may response slower after *WORKING HOUR* but we promise never leave you behind. TQ for your patient 🙏❤️
+
+*MON - FRI 8AM - 6PM*
+*SAT - SUN OFFDAY*`,
     enabled: true,
     delayMinutes: 2,
     dailyCap: 200,
@@ -354,6 +385,28 @@ const DEFAULT_APPS = {
   },
 };
 
+/* --------------------------- 地点清单 ----------------------------- */
+
+/** 设定里一行一个地点，空行略过 */
+function parseLocations(text) {
+  return String(text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+/** 展开成给顾客挑的编号清单 */
+function numberedLocations(text) {
+  return parseLocations(text)
+    .map((l, i) => `${i + 1}. ${l}`)
+    .join("\n");
+}
+
+/** 文案里的 {{LOCATIONS}} 换成编号清单 */
+function fillTemplate(text, ai) {
+  return String(text || "").replace(/\{\{\s*LOCATIONS\s*\}\}/g, numberedLocations(ai?.locations));
+}
+
 /* --------------------------- Claude 呼叫 -------------------------- */
 
 /**
@@ -381,6 +434,9 @@ function buildSystem(ai, customer) {
 
 # 产品知识
 ${ai.product}
+
+# 机器地点（只有这些是存在的，顾客讲别的要请他确认）
+${numberedLocations(ai.locations) || "（尚未设定）"}
 
 # 回覆规则
 ${ai.replyRules}
@@ -850,6 +906,7 @@ export default function App() {
               bulkApply={bulkApply}
               seedDemo={seedDemo}
               setToast={setToast}
+              locations={parseLocations(apps.ai.locations)}
             />
           )}
           {page === "automation" && (
@@ -1002,7 +1059,7 @@ function Overview({ customers, onJump, onSeed }) {
 
 function Pipeline({
   customers, stage, setStage, view, setView,
-  addCustomer, updateCustomer, addTimelineNote, bulkApply, seedDemo, setToast,
+  addCustomer, updateCustomer, addTimelineNote, bulkApply, seedDemo, setToast, locations,
 }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState({ key: "updatedAt", dir: "desc" });
@@ -1269,6 +1326,7 @@ function Pipeline({
 
       {open && (
         <Drawer
+          locations={locations}
           customer={open}
           onClose={() => setOpenId(null)}
           onUpdate={updateCustomer}
@@ -1278,6 +1336,7 @@ function Pipeline({
       )}
       {showNew && (
         <NewCustomer
+          locations={locations}
           onClose={() => setShowNew(false)}
           onSave={(d) => {
             addCustomer(d);
@@ -1366,7 +1425,7 @@ function BulkBar({ count, onClear, onApply }) {
 
 /* ------------------------------ Drawer ---------------------------- */
 
-function Drawer({ customer: c, onClose, onUpdate, onNote, setToast }) {
+function Drawer({ customer: c, onClose, onUpdate, onNote, setToast, locations }) {
   const [note, setNote] = useState("");
   const [tagInput, setTagInput] = useState("");
 
@@ -1404,7 +1463,8 @@ function Drawer({ customer: c, onClose, onUpdate, onNote, setToast }) {
             </Field>
             <Field label="Location Name">
               <select value={c.locationName} onChange={(e) => set({ locationName: e.target.value }, "改地点")} className={inputCls}>
-                {DEMO_LOCATIONS.map((l) => <option key={l}>{l}</option>)}
+                {!locations.includes(c.locationName) && c.locationName && <option>{c.locationName}</option>}
+                {locations.map((l) => <option key={l}>{l}</option>)}
               </select>
             </Field>
             <Field label="Machine ID">
@@ -1551,8 +1611,8 @@ function Drawer({ customer: c, onClose, onUpdate, onNote, setToast }) {
   );
 }
 
-function NewCustomer({ onClose, onSave }) {
-  const [d, setD] = useState({ name: "", whatsapp: "", machineId: "", itemNo: "", locationName: DEMO_LOCATIONS[0] });
+function NewCustomer({ onClose, onSave, locations }) {
+  const [d, setD] = useState({ name: "", whatsapp: "", machineId: "", itemNo: "", locationName: locations[0] || "" });
   const ok = d.name.trim() || d.whatsapp.trim();
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/30 p-4">
@@ -1572,7 +1632,7 @@ function NewCustomer({ onClose, onSave }) {
           </Field>
           <Field label="Location Name">
             <select value={d.locationName} onChange={(e) => setD({ ...d, locationName: e.target.value })} className={inputCls}>
-              {DEMO_LOCATIONS.map((l) => <option key={l}>{l}</option>)}
+              {locations.map((l) => <option key={l}>{l}</option>)}
             </select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
@@ -2239,7 +2299,7 @@ function TestBench({ apps, au, setAu, customers, pushRun, logActivity }) {
     if (guard.hit && guard.kind === "human") {
       draftNote = `命中「${guard.rule.label}」→ 不呼叫 AI，直接转真人`;
     } else if (rule) {
-      draft = rule.reply;
+      draft = fillTemplate(rule.reply, apps.ai);
       draftNote = `套用规则文案，延迟 ${rule.delayMinutes} 分钟送出`;
     } else {
       try {
