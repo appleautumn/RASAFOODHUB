@@ -65,8 +65,17 @@ export async function draftReply(input, env, clientFactory) {
   } catch (err) {
     // SDK 的错误带 status；401 多半是 key 设错了
     const status = err?.status;
+    const raw = String(err?.message || "");
     if (status === 401) throw new AiError(500, "bad_api_key", "ANTHROPIC_API_KEY 无效或已撤销");
     if (status === 429) throw new AiError(429, "rate_limited", "Anthropic 回传额度限制，稍后再试");
+    // 余额用完是营运问题不是程式问题，讲清楚去哪儲值，别吐一整段 JSON
+    if (/credit balance is too low/i.test(raw)) {
+      throw new AiError(
+        402,
+        "no_credit",
+        "Anthropic 帐户余额不足。到 console.anthropic.com 的 Plans & Billing 加值后即可继续，不用重新部署。"
+      );
+    }
     throw new AiError(502, "upstream_error", `呼叫 Anthropic 失败：${err?.message || "未知错误"}`);
   }
 

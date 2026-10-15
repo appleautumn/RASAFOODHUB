@@ -112,3 +112,15 @@ test("其它上游错误 -> 502，带原始讯息方便查", async () => {
   assert.equal(err.code, "upstream_error");
   assert.ok(err.message.includes("socket hang up"));
 });
+
+test("余额不足 -> 讲去哪加值，不吐 JSON", async () => {
+  const e400 = Object.assign(
+    new Error('400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}'),
+    { status: 400 }
+  );
+  const err = await draftReply(good, env, fakeClient(e400)).catch((e) => e);
+  assert.equal(err.code, "no_credit");
+  assert.equal(err.status, 402);
+  assert.ok(err.message.includes("Plans & Billing"));
+  assert.ok(!err.message.includes("{"), "不该把原始 JSON 吐给使用者");
+});
