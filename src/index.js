@@ -7,6 +7,7 @@ import {
   parseAudList,
 } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
+import { draftReply, AiError } from "./ai.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -285,6 +286,26 @@ export default {
     // 目前的登入身分（前端拿这个决定「团队活动」要不要出现）
     if (url.pathname === "/api/me") {
       return json({ ok: true, user: { ...user, isAdmin: user.role === "admin" } });
+    }
+
+    // AI 草稿：worker 代打 Anthropic，API key 不进浏览器
+    if (url.pathname === "/api/ai/draft") {
+      if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ ok: false, error: "bad_json" }, 400);
+      }
+      try {
+        const result = await draftReply(body, env);
+        return json({ ok: true, ...result });
+      } catch (err) {
+        if (err instanceof AiError) {
+          return json({ ok: false, error: err.code, detail: err.message }, err.status);
+        }
+        return json({ ok: false, error: "unexpected", detail: String(err?.message || err) }, 500);
+      }
     }
 
     // CRM 的资料读写（前端的 window.storage 打这里）

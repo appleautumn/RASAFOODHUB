@@ -314,3 +314,30 @@ test("authcheck 报告本机身分的两个条件", async () => {
   assert.equal(body.config.devIdentityCompiledIn, false);
   assert.equal(body.config.devIdentityConfigured, true);
 });
+
+/* ---------------------------- AI 草稿端点 ---------------------------- */
+
+test("没登入不能用 AI（不然等于把你的 Anthropic 帐单公开）", async () => {
+  const res = await worker.fetch(
+    req("/api/ai/draft", { method: "POST", body: JSON.stringify({ system: "a", userText: "b" }) }),
+    baseEnv(fakeDb({ users }))
+  );
+  assert.equal(res.status, 401);
+});
+
+test("停权的人也不能用 AI", async () => {
+  const r = await authed("/api/ai/draft", SUSPENDED, { method: "POST", body: JSON.stringify({ system: "a", userText: "b" }) });
+  assert.equal((await worker.fetch(r, baseEnv(fakeDb({ users })))).status, 401);
+});
+
+test("GET 打 AI 端点 -> 405", async () => {
+  const r = await authed("/api/ai/draft", ADMIN);
+  assert.equal((await worker.fetch(r, baseEnv(fakeDb({ users })))).status, 405);
+});
+
+test("登入了但 worker 没设 API key -> 回 no_api_key 而不是静默失败", async () => {
+  const r = await authed("/api/ai/draft", ADMIN, { method: "POST", body: JSON.stringify({ system: "a", userText: "b" }) });
+  const res = await worker.fetch(r, baseEnv(fakeDb({ users })));
+  assert.equal(res.status, 500);
+  assert.equal((await res.json()).error, "no_api_key");
+});

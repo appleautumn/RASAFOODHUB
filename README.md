@@ -67,6 +67,23 @@ Access 会带两个东西进来：
 直接填完整主机名即可），但如果你同时开了 workers.dev 和自订网域、
 却只替其中一个建了 application，另一个就是没锁的门。
 
+## AI 草稿要先放 API key
+
+`AI 助理` 页面要能用，worker 必须有 Anthropic 的 key。它存成 Cloudflare secret，
+**不要写进 `wrangler.toml`**（那个档案会进 git）：
+
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY
+# 贴上 sk-ant-... 然后 Enter
+```
+
+前端呼叫的是 `/api/ai/draft`，不是 `api.anthropic.com`。原本那段直接打
+Anthropic 的程式码只在 Claude artifact 沙箱里能跑（沙箱替它注入凭证），
+而且把 key 放进前端等于让任何按 F12 的人拿走。
+
+用的是 `claude-opus-5-5`，`effort: "low"`（回覆只有 2–3 句，规则都写在
+system 里，不需要深想）。想换便宜一点的，改 `src/ai.js` 的 `MODEL`。
+
 ## 两个设定不能动
 
 **`wrangler.toml` 的 `run_worker_first = true`** —— 少了它，静态档会由资源层
@@ -86,6 +103,7 @@ Access 会带两个东西进来：
 | `/api/authcheck` | 否（永远回 200） | 验证过程的诊断结果，设定填错时看这个 |
 | `/api/me` | 是 | `{ email, name, role, isAdmin }` |
 | `/api/storage/:key` | 是 | CRM 资料的读写（GET / PUT / DELETE），全团队共用一份 |
+| `/api/ai/draft` | 是 | 代打 Anthropic 产生回覆草稿，API key 不进浏览器 |
 | `/api/admin/*` | 是，且必须 `admin` | 之后要放只有 admin 能看的资料就挂这个前缀 |
 | 其它 | 是 | CRM 本体 |
 

@@ -360,26 +360,24 @@ const DEFAULT_APPS = {
 
 /* --------------------------- Claude 呼叫 -------------------------- */
 
+/**
+ * 透过自家 worker 呼叫 Claude。
+ * 不直接打 api.anthropic.com —— API key 只存在 worker 的 secret 里，
+ * 放进前端等于让任何按 F12 的人拿走。
+ */
 async function callClaude(system, userText) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/ai/draft", {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      system,
-      messages: [{ role: "user", content: userText }],
-    }),
+    body: JSON.stringify({ system, userText }),
   });
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const data = await res.json();
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
-  if (!text) throw new Error("回覆是空的");
-  return text;
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.ok) {
+    throw new Error(data?.detail || "AI 服务暂时无法使用（HTTP " + res.status + "）");
+  }
+  if (!data.text) throw new Error("回覆是空的");
+  return data.text;
 }
 
 function buildSystem(ai, customer) {
