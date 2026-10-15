@@ -4,7 +4,6 @@ import {
   Users,
   Zap,
   Bot,
-  Send,
   History,
   Search,
   X,
@@ -29,7 +28,7 @@ import {
 /* ------------------------------------------------------------------ */
 const KEY_MAIN = "rasa-crm:main"; // { customers }
 const KEY_LOG = "rasa-crm:log"; // { activities }
-const KEY_APPS = "rasa-crm:apps"; // { ai, automation, campaigns }
+const KEY_APPS = "rasa-crm:apps"; // { ai, automation }
 
 /* ------------------------------- model ---------------------------- */
 
@@ -155,7 +154,6 @@ function makeDemo(n = 20) {
       tags: Math.random() > 0.55 ? [DEMO_TAGS[Math.floor(Math.random() * DEMO_TAGS.length)]] : [],
       notes: "",
       contactType: Math.random() > 0.92 ? "supplier" : "customer",
-      broadcastOptIn: false,
       needsReply: !quiet && Math.random() > 0.55,
       nextFollowUpDate: quiet ? "" : addDays(Math.floor(Math.random() * 7) - 3),
       followUpCount: Math.floor(Math.random() * 3),
@@ -194,7 +192,6 @@ function blankCustomer() {
     tags: [],
     notes: "",
     contactType: "customer",
-    broadcastOptIn: false,
     needsReply: true,
     nextFollowUpDate: addDays(1),
     followUpCount: 0,
@@ -355,7 +352,6 @@ const DEFAULT_APPS = {
     keywordRules: DEFAULT_KEYWORD_RULES,
     runLog: [],
   },
-  campaigns: [],
 };
 
 /* --------------------------- Claude 呼叫 -------------------------- */
@@ -536,7 +532,6 @@ export default function App() {
         setApps({
           ai: { ...DEFAULT_APPS.ai, ...(appData.ai || {}) },
           automation: { ...DEFAULT_APPS.automation, ...(appData.automation || {}) },
-          campaigns: appData.campaigns || [],
         });
       }
       setLoading(false);
@@ -683,13 +678,6 @@ export default function App() {
     logActivity("加纪录", c?.name || "客户", text.slice(0, 60));
   };
 
-  /** 群发模拟写纪录，不重复灌爆团队活动 */
-  const silentTimeline = (id, text) => {
-    setCustomers((prev) =>
-      prev.map((c) => (c.id === id ? touch(pushTimeline(c, "campaign", text)) : c))
-    );
-  };
-
   /** 自动化执行纪录：success 绿 / fail 红 / shadow 灰 */
   const pushRun = (entry) => {
     setApps((a) => ({
@@ -755,7 +743,6 @@ export default function App() {
     { id: "pipeline", label: "Lead Pipeline", icon: Users },
     { id: "automation", label: "自动化与测试", icon: Zap },
     { id: "ai", label: "AI 助理", icon: Bot },
-    { id: "campaign", label: "群发 Campaign", icon: Send },
     { id: "activity", label: "团队活动", icon: History, adminOnly: true },
   ];
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
@@ -882,16 +869,6 @@ export default function App() {
               customers={customers}
               logActivity={logActivity}
               addTimelineNote={addTimelineNote}
-              setToast={setToast}
-            />
-          )}
-          {page === "campaign" && (
-            <Campaigns
-              apps={apps}
-              setApps={setApps}
-              customers={customers}
-              logActivity={logActivity}
-              silentTimeline={silentTimeline}
               setToast={setToast}
             />
           )}
@@ -1489,11 +1466,6 @@ function Drawer({ customer: c, onClose, onUpdate, onNote, setToast }) {
               </label>
             </div>
           </div>
-
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={c.broadcastOptIn} onChange={(e) => set({ broadcastOptIn: e.target.checked }, "改群发同意")} />
-            Broadcast 允许（预设 No）
-          </label>
 
           {QUIET_STAGES.includes(c.stage) && (
             <div className="rounded bg-slate-100 px-3 py-2 text-xs text-slate-600">
@@ -2443,581 +2415,5 @@ function TestBench({ apps, au, setAu, customers, pushRun, logActivity }) {
         </ul>
       </div>
     </section>
-  );
-}
-
-/* ========================= 群发 Campaign =========================== */
-
-const CAMPAIGN_STATUS = {
-  draft: { label: "草稿", tone: "slate" },
-  sending: { label: "发送中", tone: "teal" },
-  paused: { label: "暂停", tone: "amber" },
-  done: { label: "完成", tone: "green" },
-  cancelled: { label: "已取消", tone: "red" },
-};
-
-function Campaigns({ apps, setApps, customers, logActivity, silentTimeline, setToast }) {
-  const [building, setBuilding] = useState(false);
-  const list = apps.campaigns;
-
-  const setList = (next) => setApps((a) => ({ ...a, campaigns: next }));
-
-  return (
-    <div className="space-y-5">
-      <div className="rounded border border-amber-300 bg-amber-100 px-4 py-3 text-sm font-medium text-amber-900">
-        目前为模拟发送，尚未连接讯息平台。
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div>
-          <h1 className="text-lg font-semibold">群发 Campaign</h1>
-          <p className="text-sm text-slate-500">建名单 → 写内容 → 微调 → 节流确认。</p>
-        </div>
-        <Btn variant="primary" className="ml-auto" onClick={() => setBuilding(true)}>
-          <Plus className="mr-1 inline h-4 w-4" />建立群发
-        </Btn>
-      </div>
-
-      {building && (
-        <CampaignWizard
-          customers={customers}
-          existing={list}
-          onCancel={() => setBuilding(false)}
-          onCreate={(c) => {
-            setList([c, ...list]);
-            setBuilding(false);
-            logActivity("建立群发", c.name, `名单 ${c.recipients.length} 人，预计分 ${c.days} 天发完`);
-            setToast("群发已建立，状态是草稿");
-          }}
-        />
-      )}
-
-      {list.map((c) => (
-        <CampaignCard
-          key={c.id}
-          campaign={c}
-          customers={customers}
-          onChange={(next) => setList(list.map((x) => (x.id === c.id ? next : x)))}
-          logActivity={logActivity}
-          silentTimeline={silentTimeline}
-          setToast={setToast}
-        />
-      ))}
-
-      {list.length === 0 && !building && (
-        <div className="rounded border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
-          还没有群发。最常发的是 New Product Listed，从「建立群发」开始。
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CampaignWizard({ customers, existing, onCancel, onCreate }) {
-  const [step, setStep] = useState(1);
-  const [name, setName] = useState("New Product Listed");
-  const [f, setF] = useState({
-    stages: [],
-    lastContactDays: 90,
-    channels: ["customer"],
-    tags: [],
-    purchase: "any",
-  });
-  const [ex, setEx] = useState({ tags: [], inOtherCampaign: true, needsReply: true });
-  const [body, setBody] = useState(
-    "Hi {{name}}, 我们上新品啦 ☺️ 欢迎到 Rasa Foodhub 机器试试看！\nThank you for your supporting ❤️"
-  );
-  const [removed, setRemoved] = useState([]);
-  const [throttle, setThrottle] = useState({ secondsPer: 20, dailyCap: 200 });
-  const [confirmed, setConfirmed] = useState(false);
-  const [q, setQ] = useState("");
-  const [pageNo, setPageNo] = useState(0);
-
-  const allTags = useMemo(
-    () => Array.from(new Set(customers.flatMap((c) => c.tags || []))),
-    [customers]
-  );
-  const inOther = useMemo(() => {
-    const s = new Set();
-    existing.forEach((c) =>
-      c.recipients.forEach((r) => {
-        if (r.status !== "removed") s.add(r.id);
-      })
-    );
-    return s;
-  }, [existing]);
-
-  /* 先算符合条件的，再逐条套排除，好交代 0 人是谁挡的 */
-  const analysis = useMemo(() => {
-    const cutoff = addDays(-f.lastContactDays);
-    const base = customers.filter((c) => {
-      if (f.stages.length && !f.stages.includes(c.stage)) return false;
-      if (!f.channels.includes(c.contactType)) return false;
-      if (f.tags.length && !(c.tags || []).some((t) => f.tags.includes(t))) return false;
-      if (f.lastContactDays && (c.lastInteractionAt || "").slice(0, 10) < cutoff) return false;
-      if (f.purchase === "yes" && !c.receiptAmount) return false;
-      if (f.purchase === "no" && c.receiptAmount) return false;
-      return true;
-    });
-    const reasons = [];
-    let pool = base;
-    const drop = (fn, label) => {
-      const before = pool.length;
-      pool = pool.filter((c) => !fn(c));
-      const n = before - pool.length;
-      if (n > 0) reasons.push({ label, n });
-    };
-    drop((c) => c.contactType === "supplier", "是 supplier list");
-    if (ex.tags.length) drop((c) => (c.tags || []).some((t) => ex.tags.includes(t)), `带有排除标签 ${ex.tags.join(" / ")}`);
-    if (ex.inOtherCampaign) drop((c) => inOther.has(c.id), "已在其他群发名单里");
-    if (ex.needsReply) drop((c) => c.needsReply || c.stage === "escalated", "正在处理中或需要回覆");
-    drop((c) => c.stage === "closed", "个案已结束");
-    return { base: base.length, pool, reasons };
-  }, [customers, f, ex, inOther]);
-
-  const pool = analysis.pool;
-  const active = pool.filter((c) => !removed.includes(c.id));
-  const first = active[0];
-
-  const render = (text, c) => text.replace(/\{\{name\}\}/g, c?.name || "亲");
-
-  const schedule = useMemo(() => {
-    const perDay = Math.max(1, throttle.dailyCap);
-    const days = Math.max(1, Math.ceil(active.length / perDay));
-    return { days, perDay };
-  }, [active.length, throttle]);
-
-  const filteredList = active.filter((c) =>
-    (c.name + c.whatsapp).toLowerCase().includes(q.trim().toLowerCase())
-  );
-  const PER = 25;
-  const pageRows = filteredList.slice(pageNo * PER, pageNo * PER + PER);
-
-  const create = () => {
-    const start = Date.now();
-    const recipients = pool.map((c, i) => {
-      const isRemoved = removed.includes(c.id);
-      const idx = pool.slice(0, i).filter((x) => !removed.includes(x.id)).length;
-      const dayOffset = Math.floor(idx / schedule.perDay);
-      const withinDay = idx % schedule.perDay;
-      return {
-        id: c.id,
-        name: c.name,
-        whatsapp: c.whatsapp,
-        status: isRemoved ? "removed" : "pending",
-        scheduledAt: new Date(start + dayOffset * 864e5 + withinDay * throttle.secondsPer * 1000).toISOString(),
-      };
-    });
-    onCreate({
-      id: uid(),
-      name,
-      body,
-      status: "draft",
-      throttle,
-      days: schedule.days,
-      createdAt: new Date().toISOString(),
-      recipients,
-      summary: null,
-    });
-  };
-
-  const Toggle = ({ on, onClick, children }) => (
-    <button
-      onClick={onClick}
-      className={cx(
-        "rounded border px-2 py-1 text-xs",
-        on ? "border-teal-700 bg-teal-700 text-white" : "border-slate-300 bg-white text-slate-600"
-      )}
-    >
-      {children}
-    </button>
-  );
-
-  return (
-    <div className="rounded border-2 border-teal-300 bg-white">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3">
-        <span className="text-sm font-semibold">建立群发</span>
-        <div className="flex gap-1">
-          {["建名单", "写内容", "名单微调", "节流与确认"].map((s, i) => (
-            <span
-              key={s}
-              className={cx(
-                "rounded px-2 py-0.5 text-xs",
-                step === i + 1 ? "bg-teal-700 text-white" : "bg-slate-100 text-slate-500"
-              )}
-            >
-              {i + 1} {s}
-            </span>
-          ))}
-        </div>
-        <button onClick={onCancel} className="ml-auto rounded p-1 hover:bg-slate-100">
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      <div className="space-y-4 p-4">
-        {step === 1 && (
-          <>
-            <Field label="群发名称">
-              <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
-            </Field>
-
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="space-y-3 rounded border border-slate-200 p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">筛选条件</div>
-                <div>
-                  <div className="mb-1 text-xs text-slate-500">阶段（不选＝全部）</div>
-                  <div className="flex flex-wrap gap-1">
-                    {STAGES.map((s) => (
-                      <Toggle
-                        key={s.id}
-                        on={f.stages.includes(s.id)}
-                        onClick={() =>
-                          setF((v) => ({
-                            ...v,
-                            stages: v.stages.includes(s.id) ? v.stages.filter((x) => x !== s.id) : [...v.stages, s.id],
-                          }))
-                        }
-                      >
-                        {s.label}
-                      </Toggle>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="mb-1 text-xs text-slate-500">来源渠道</div>
-                  <div className="flex flex-wrap gap-1">
-                    {CONTACT_TYPES.map((t) => (
-                      <Toggle
-                        key={t.id}
-                        on={f.channels.includes(t.id)}
-                        onClick={() =>
-                          setF((v) => ({
-                            ...v,
-                            channels: v.channels.includes(t.id) ? v.channels.filter((x) => x !== t.id) : [...v.channels, t.id],
-                          }))
-                        }
-                      >
-                        {t.label}
-                      </Toggle>
-                    ))}
-                  </div>
-                </div>
-                <Field label="最后联络在几天内">
-                  <input type="number" min="1" value={f.lastContactDays} onChange={(e) => setF({ ...f, lastContactDays: Number(e.target.value) })} className={inputCls} />
-                </Field>
-                <div>
-                  <div className="mb-1 text-xs text-slate-500">标签（不选＝不限）</div>
-                  <div className="flex flex-wrap gap-1">
-                    {allTags.length === 0 && <span className="text-xs text-slate-400">目前没有标签</span>}
-                    {allTags.map((t) => (
-                      <Toggle
-                        key={t}
-                        on={f.tags.includes(t)}
-                        onClick={() => setF((v) => ({ ...v, tags: v.tags.includes(t) ? v.tags.filter((x) => x !== t) : [...v.tags, t] }))}
-                      >
-                        {t}
-                      </Toggle>
-                    ))}
-                  </div>
-                </div>
-                <Field label="买过 / 没买过">
-                  <select value={f.purchase} onChange={(e) => setF({ ...f, purchase: e.target.value })} className={inputCls}>
-                    <option value="any">不限</option>
-                    <option value="yes">买过（有收据金额）</option>
-                    <option value="no">没买过</option>
-                  </select>
-                </Field>
-              </div>
-
-              <div className="space-y-3 rounded border border-red-200 bg-red-50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-red-700">不要发给这些顾客</div>
-                <p className="text-xs text-red-800">Supplier list 永远排除，不可关闭。</p>
-                <div>
-                  <div className="mb-1 text-xs text-red-700">排除标签</div>
-                  <div className="flex flex-wrap gap-1">
-                    {allTags.map((t) => (
-                      <Toggle
-                        key={t}
-                        on={ex.tags.includes(t)}
-                        onClick={() => setEx((v) => ({ ...v, tags: v.tags.includes(t) ? v.tags.filter((x) => x !== t) : [...v.tags, t] }))}
-                      >
-                        {t}
-                      </Toggle>
-                    ))}
-                  </div>
-                </div>
-                <label className="flex items-center gap-2 text-sm text-red-900">
-                  <input type="checkbox" checked={ex.inOtherCampaign} onChange={(e) => setEx({ ...ex, inOtherCampaign: e.target.checked })} />
-                  排除已在其他群发名单的人
-                </label>
-                <label className="flex items-center gap-2 text-sm text-red-900">
-                  <input type="checkbox" checked={ex.needsReply} onChange={(e) => setEx({ ...ex, needsReply: e.target.checked })} />
-                  排除正在客诉／需要回覆的人
-                </label>
-              </div>
-            </div>
-
-            <div className="rounded border border-slate-200 bg-slate-50 p-3">
-              <div className="text-sm font-medium">符合 {pool.length} 人</div>
-              {pool.length === 0 && (
-                <div className="mt-1 space-y-1 text-sm font-medium text-red-600">
-                  <div>有 {analysis.base} 人符合筛选条件，但全部被排除了：</div>
-                  <ul className="list-disc pl-5 font-normal">
-                    {analysis.reasons.map((r, i) => (
-                      <li key={i}>{r.n} 人 — {r.label}</li>
-                    ))}
-                    {analysis.reasons.length === 0 && <li>筛选条件本身就没有人符合，请放宽阶段或最后联络天数。</li>}
-                  </ul>
-                </div>
-              )}
-              {pool.length > 0 && (
-                <>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {analysis.base} 人符合筛选
-                    {analysis.reasons.map((r) => `，扣掉 ${r.n} 人（${r.label}）`).join("")}
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {pool.slice(0, 8).map((c) => (
-                      <span key={c.id} className="rounded bg-white px-2 py-0.5 text-xs">{c.name}</span>
-                    ))}
-                    {pool.length > 8 && <span className="text-xs text-slate-400">…还有 {pool.length - 8} 人</span>}
-                  </div>
-                </>
-              )}
-            </div>
-          </>
-        )}
-
-        {step === 2 && (
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Field label="内容（可用 {{name}} 变数）">
-              <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} className={inputCls} />
-            </Field>
-            <div>
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
-                预览 · {first ? first.name : "没有收件人"}
-              </div>
-              <div className="whitespace-pre-wrap rounded border border-slate-200 bg-emerald-50 p-3 text-sm">
-                {render(body, first)}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative min-w-[180px] flex-1">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
-                <input value={q} onChange={(e) => { setQ(e.target.value); setPageNo(0); }} placeholder="搜寻收件人" className={cx(inputCls, "pl-8")} />
-              </div>
-              <span className="font-mono text-xs text-slate-400">
-                名单 {active.length} 人 · 已移出 {removed.length} 人
-              </span>
-            </div>
-            <ul className="divide-y divide-slate-100 rounded border border-slate-200">
-              {pool
-                .filter((c) => (c.name + c.whatsapp).toLowerCase().includes(q.trim().toLowerCase()))
-                .slice(pageNo * PER, pageNo * PER + PER)
-                .map((c) => {
-                  const out = removed.includes(c.id);
-                  return (
-                    <li key={c.id} className={cx("flex items-center gap-2 px-3 py-2 text-sm", out && "bg-slate-50 text-slate-400")}>
-                      <span className={cx("font-medium", out && "line-through")}>{c.name}</span>
-                      <span className="font-mono text-xs text-slate-400">{c.whatsapp}</span>
-                      {out && <Pill>已移出</Pill>}
-                      <Btn
-                        className="ml-auto px-2 py-1 text-xs"
-                        variant={out ? "default" : "danger"}
-                        onClick={() =>
-                          setRemoved((r) => (out ? r.filter((x) => x !== c.id) : [...r, c.id]))
-                        }
-                      >
-                        {out ? "放回名单" : "移出名单"}
-                      </Btn>
-                    </li>
-                  );
-                })}
-            </ul>
-            <div className="flex items-center justify-center gap-2">
-              <Btn disabled={pageNo === 0} onClick={() => setPageNo((p) => p - 1)}>上一页</Btn>
-              <span className="text-xs text-slate-500">第 {pageNo + 1} 页</span>
-              <Btn disabled={(pageNo + 1) * PER >= pool.length} onClick={() => setPageNo((p) => p + 1)}>下一页</Btn>
-            </div>
-          </>
-        )}
-
-        {step === 4 && (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="每几秒发一封">
-                <input type="number" min="1" value={throttle.secondsPer} onChange={(e) => setThrottle({ ...throttle, secondsPer: Number(e.target.value) })} className={inputCls} />
-              </Field>
-              <Field label="每日上限（封）">
-                <input type="number" min="1" value={throttle.dailyCap} onChange={(e) => setThrottle({ ...throttle, dailyCap: Number(e.target.value) })} className={inputCls} />
-              </Field>
-            </div>
-            <div className="rounded border border-slate-200 bg-slate-50 p-3 text-sm">
-              <div className="font-medium">
-                {active.length} 人 · 每天最多 {schedule.perDay} 封 · 这批会分 {schedule.days} 天发完
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                每个人的预定发送时间在建立名单时就算好，之后不会再变动。
-              </div>
-            </div>
-            <label className="flex items-start gap-2 text-sm">
-              <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-1" />
-              我确认名单与节流设定，建立这个群发（建立后仍是草稿，要另外按「开始发送」）
-            </label>
-          </>
-        )}
-
-        <div className="flex justify-between border-t border-slate-200 pt-3">
-          <Btn onClick={step === 1 ? onCancel : () => setStep(step - 1)}>
-            {step === 1 ? "取消" : "上一步"}
-          </Btn>
-          {step < 4 ? (
-            <Btn variant="primary" disabled={step === 1 && pool.length === 0} onClick={() => setStep(step + 1)}>
-              下一步
-            </Btn>
-          ) : (
-            <Btn variant="primary" disabled={!confirmed || active.length === 0} onClick={create}>
-              建立群发
-            </Btn>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CampaignCard({ campaign: cp, customers, onChange, logActivity, silentTimeline, setToast }) {
-  const [open, setOpen] = useState(false);
-  const timer = useRef(null);
-  const stRef = useRef(cp);
-  stRef.current = cp;
-
-  const total = cp.recipients.filter((r) => r.status !== "removed").length;
-  const sent = cp.recipients.filter((r) => r.status === "sent").length;
-  const skipped = cp.recipients.filter((r) => r.status === "skipped").length;
-  const pct = total ? Math.round(((sent + skipped) / total) * 100) : 0;
-
-  /* 模拟发送：加速跑，逐一送出前再检查一次状态 */
-  useEffect(() => {
-    if (cp.status !== "sending") {
-      clearInterval(timer.current);
-      return;
-    }
-    timer.current = setInterval(() => {
-      const cur = stRef.current;
-      const next = cur.recipients.find((r) => r.status === "pending");
-      if (!next) {
-        clearInterval(timer.current);
-        const s = {
-          sent: cur.recipients.filter((r) => r.status === "sent").length,
-          skipped: cur.recipients.filter((r) => r.status === "skipped").length,
-          removed: cur.recipients.filter((r) => r.status === "removed").length,
-        };
-        onChange({ ...cur, status: "done", summary: s });
-        logActivity("发送群发", cur.name, `完成：送出 ${s.sent}、跳过 ${s.skipped}、移出 ${s.removed}`);
-        setToast(`「${cur.name}」发送完成`);
-        return;
-      }
-      const c = customers.find((x) => x.id === next.id);
-      const skip =
-        !c || c.needsReply || c.stage === "closed" || c.stage === "escalated" || c.contactType === "supplier";
-      if (!skip) {
-        silentTimeline(c.id, `收到群发：${cur.name}（模拟）`);
-      }
-      onChange({
-        ...cur,
-        recipients: cur.recipients.map((r) =>
-          r.id === next.id ? { ...r, status: skip ? "skipped" : "sent", doneAt: new Date().toISOString() } : r
-        ),
-      });
-    }, 420);
-    return () => clearInterval(timer.current);
-  }, [cp.status, customers]);
-
-  const st = CAMPAIGN_STATUS[cp.status];
-
-  return (
-    <div className="rounded border border-slate-200 bg-white">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3">
-        <button onClick={() => setOpen(!open)} className="text-sm font-semibold hover:underline">
-          {cp.name}
-        </button>
-        <Pill tone={st.tone}>{st.label}</Pill>
-        <span className="font-mono text-xs text-slate-400">
-          {total} 人 · 分 {cp.days} 天 · 每 {cp.throttle.secondsPer} 秒 1 封
-        </span>
-        <div className="ml-auto flex gap-2">
-          {cp.status === "draft" && (
-            <Btn
-              variant="primary"
-              onClick={() => {
-                onChange({ ...cp, status: "sending" });
-                logActivity("发送群发", cp.name, `开始发送（模拟），名单 ${total} 人`);
-              }}
-            >
-              <Play className="mr-1 inline h-4 w-4" />开始发送
-            </Btn>
-          )}
-          {cp.status === "sending" && (
-            <Btn onClick={() => { onChange({ ...cp, status: "paused" }); logActivity("发送群发", cp.name, "暂停发送"); }}>
-              <Pause className="mr-1 inline h-4 w-4" />暂停
-            </Btn>
-          )}
-          {cp.status === "paused" && (
-            <>
-              <Btn variant="primary" onClick={() => { onChange({ ...cp, status: "sending" }); logActivity("发送群发", cp.name, "继续发送"); }}>
-                继续
-              </Btn>
-              <Btn variant="danger" onClick={() => { onChange({ ...cp, status: "cancelled" }); logActivity("发送群发", cp.name, "取消群发"); }}>
-                取消
-              </Btn>
-            </>
-          )}
-        </div>
-      </div>
-
-      {(cp.status === "sending" || cp.status === "paused" || cp.status === "done") && (
-        <div className="px-4 py-3">
-          <div className="h-2 w-full overflow-hidden rounded bg-slate-200">
-            <div className="h-full bg-teal-600 transition-all" style={{ width: pct + "%" }} />
-          </div>
-          <div className="mt-1 font-mono text-xs text-slate-500">
-            {sent + skipped} / {total} · 送出 {sent} · 跳过 {skipped}
-          </div>
-        </div>
-      )}
-
-      {cp.summary && (
-        <div className="mx-4 mb-3 rounded bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
-          发送完成（模拟）：送出 {cp.summary.sent} 人，跳过 {cp.summary.skipped} 人（送出前状态已变成需回覆 / 已结束 / 已升级），建立时移出 {cp.summary.removed} 人。
-        </div>
-      )}
-
-      {open && (
-        <div className="border-t border-slate-200 p-4">
-          <div className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm">{cp.body}</div>
-          <ul className="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded border border-slate-200">
-            {cp.recipients.slice(0, 200).map((r) => (
-              <li key={r.id} className="flex items-center gap-2 px-3 py-1.5 text-xs">
-                <span className="font-medium">{r.name}</span>
-                <span className="font-mono text-slate-400">{r.whatsapp}</span>
-                <span className="ml-auto font-mono text-slate-400">
-                  预定 {fmtTime(r.scheduledAt)}
-                </span>
-                <Pill tone={r.status === "sent" ? "green" : r.status === "skipped" ? "amber" : "slate"}>
-                  {({ pending: "待发", sent: "已送出", skipped: "跳过", removed: "已移出" })[r.status]}
-                </Pill>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
   );
 }

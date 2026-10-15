@@ -67,6 +67,17 @@ Access 会带两个东西进来：
 直接填完整主机名即可），但如果你同时开了 workers.dev 和自订网域、
 却只替其中一个建了 application，另一个就是没锁的门。
 
+## 没有群发功能，这是刻意的
+
+CRM 原本有一页「群发 Campaign」，已经整个拿掉（连同顾客卡片上的
+「Broadcast 允许」勾选、`campaigns` 资料栏位、以及相关的三个元件）。
+
+理由是风险：主动群发给没联络过你的人，是 WhatsApp 封号最主要的原因。
+这套系统只做售后 —— 回覆主动找上门的顾客 —— 留着一个群发按钮，
+等于摆一把随时可能被误触的枪。需求本来就没有，那就不留。
+
+要回复这个功能的话，它在 git 历史里（见「Remove the broadcast campaign feature」那个 commit）。
+
 ## AI 草稿要先放 API key
 
 `AI 助理` 页面要能用，worker 必须有 Anthropic 的 key。它存成 Cloudflare secret，
