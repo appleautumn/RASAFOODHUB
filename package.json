@@ -10,7 +10,7 @@
     "db:list": "wrangler d1 execute rasa-crm --remote --command=\"SELECT email, name, role FROM users ORDER BY role, email\"",
     "test": "node --test test/*.test.mjs",
     "access:setup": "node scripts/setup-access.mjs",
-    "build": "npm run build:css && npm run build:js",
+    "build": "npm run build:css && npm run build:js && node scripts/stamp-assets.mjs",
     "db:init:local": "wrangler d1 execute rasa-crm --local --file=./schema.sql",
     "db:seed:local": "wrangler d1 execute rasa-crm --local --file=./seed.users.sql",
     "build:css": "tailwindcss -i app/styles.css -o public/app.css --minify",
