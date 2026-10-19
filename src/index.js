@@ -8,6 +8,7 @@ import {
 } from "./access-jwt.js";
 import { resolveUser } from "./users.js";
 import { draftReply, AiError } from "./ai.js";
+import { probeBridge } from "./wa.js";
 
 /* ---------------------------- 回应小工具 ---------------------------- */
 
@@ -317,6 +318,10 @@ export default {
     if (url.pathname.startsWith("/api/admin/")) {
       if (user.role !== "admin") {
         return json({ ok: false, error: "forbidden", detail: "需要 admin 角色" }, 403);
+      }
+      // 探测旧的 WhatsApp 桥接主机还在不在
+      if (url.pathname === "/api/admin/wa/status") {
+        return json({ ok: true, bridge: await probeBridge(env) });
       }
     }
 
