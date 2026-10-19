@@ -234,6 +234,34 @@ Stesen LRT Kelana Jaya
 Kilang Sunway Damansara
 SMK Taman Melawati
 Klinik Kesihatan Kepong`,
+  // 标准话术：遇到对应情况，AI 整段照用，不改写、不翻译。
+  // 用「【情况】…」开头描述什么时候用，下一行起是要原样送出的文字。
+  // 文字里可以放 {{LOCATIONS}}，送给 AI 之前会展开成编号地点清单。
+  scripts: `【情况】顾客说已付款但机器没出货，而且还没给过资料
+Hi, Thank you for your message ☺️
+
+*Please fill in the form if you have make payment but item failed to disburse*
+
+Name :
+
+Location — *reply the number* :
+{{LOCATIONS}}
+
+ID Machine ( Shown on the screen left side) :
+Item no :
+
+Send us your *TRANSACTION RECEIPT*
+
+We may response slower after *WORKING HOUR* but we promise never leave you behind. TQ for your patient 🙏❤️
+
+*MON - FRI 8AM - 6PM*
+*SAT - SUN OFFDAY*
+
+【情况】顾客急着要马上有人回应
+You may give me a call if you need my immediately response.
+
+【情况】个案处理完了，结尾道谢
+Thank you for your supporting! We look forward to see you again! ❤️`,
   toneExamples: `a-Hi, Thank you for your message ☺️
 
 *Please fill in the form if you have make payment but item failed to disburse*
@@ -256,6 +284,7 @@ c-Thank you for your supporting! We look forward to see you again! ❤️`,
 };
 
 const AI_BLOCKS = [
+  { key: "scripts", label: "标准话术（照用，不改写）" },
   { key: "locations", label: "机器地点清单" },
   { key: "product", label: "产品知识" },
   { key: "replyRules", label: "回覆规则" },
@@ -444,11 +473,16 @@ ${ai.replyRules}
 # 销售规则
 ${ai.salesRules}
 
-# 语气范例（模仿这些的语气，不要照抄）
+# 标准话术（最优先。情况对得上就整段照用）
+${fillTemplate(ai.scripts, ai) || "（尚未设定）"}
+
+# 语气范例（没有标准话术对得上时，才参考这个语气自己写）
 ${ai.toneExamples}
 
 # 硬规定
-- 最多 2–3 句。
+- **先看「标准话术」。只要有一条的情况对得上，就把那段文字一字不改地输出** ——
+  不要改写、不要翻译成别的语言、不要缩短、不要补上自己的句子。标点与排版也照原样。
+- 没有任何标准话术对得上，才自己写，这时最多 2–3 句。
 - 只能用上面「产品知识」里写到的资讯。价格、库存、健康或成分声明一律回「${UNKNOWN_REPLY}」，绝对不可以自己猜或推测。
 - 遇到再次要求退款、顾客不会再回同一地点、产品品质或过期，只回一句感谢，然后交给真人。
 ${customer ? `\n# 这位顾客的个案\n姓名：${customer.name}\n地点：${customer.locationName}\nMachine ID：${customer.machineId}\nItem no：${customer.itemNo}\n目前阶段：${STAGE_MAP[customer.stage]?.label}\n机器系统：${customer.machineStatus}\nFINEXUS：${customer.finexusStatus}` : ""}
