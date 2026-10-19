@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
+  parseLocations,
+  numberedLocations,
+  fillTemplate,
+  parseScripts,
+  buildPickSystem,
+  parsePick,
+  lookupLocation,
+} from "../src/scripts.js";
+import {
   LayoutDashboard,
   Users,
   Zap,
@@ -224,7 +233,7 @@ FINEXUS 付款闸道状态：captured / void / reverse / refunded。
 价格、库存、健康或成分声明一律不自己回答。`,
   // 一行一个地点。这份清单同时供三处使用：
   //   1. 新增／编辑顾客时的「地点」下拉选单
-  //   2. 回覆文案里的 {{LOCATIONS}}（会展开成编号清单给顾客选）
+  //   2. 顾客报的机器编号 -> 自动查出地点（不必再问顾客地点）
   //   3. 告诉 AI 哪些地点是存在的
   locations: `Kolej Vokasional Setapak
 Hospital Selayang Lobby
@@ -236,16 +245,14 @@ SMK Taman Melawati
 Klinik Kesihatan Kepong`,
   // 标准话术：遇到对应情况，AI 整段照用，不改写、不翻译。
   // 用「【情况】…」开头描述什么时候用，下一行起是要原样送出的文字。
-  // 文字里可以放 {{LOCATIONS}}，送给 AI 之前会展开成编号地点清单。
+  // 文字里可以放 {{LOCATIONS}}（会展开成编号清单），但地点数量多时
+  // 不建议列给顾客看 —— 问机器编号就够了，系统自己查得到地点。
   scripts: `【情况】顾客说已付款但机器没出货，而且还没给过资料
 Hi, Thank you for your message ☺️
 
 *Please fill in the form if you have make payment but item failed to disburse*
 
 Name :
-
-Location — *reply the number* :
-{{LOCATIONS}}
 
 ID Machine ( Shown on the screen left side) :
 Item no :
@@ -366,15 +373,12 @@ const DEFAULT_KEYWORD_RULES = [
     id: "kw_payment",
     name: "付款关键字 → 发收集表格",
     keywords: ["payment", "paid", "byr", "bayar"],
-    // {{LOCATIONS}} 送出前会展开成编号清单，顾客回数字就好
+    // 不问地点：顾客报机器编号，系统自己查
     reply: `Hi, Thank you for your message ☺️
 
 *Please fill in the form if you have make payment but item failed to disburse*
 
 Name :
-
-Location — *reply the number* :
-{{LOCATIONS}}
 
 ID Machine ( Shown on the screen left side) :
 Item no :
@@ -414,28 +418,6 @@ const DEFAULT_APPS = {
   },
 };
 
-/* --------------------------- 地点清单 ----------------------------- */
-
-/** 设定里一行一个地点，空行略过 */
-function parseLocations(text) {
-  return String(text || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-}
-
-/** 展开成给顾客挑的编号清单 */
-function numberedLocations(text) {
-  return parseLocations(text)
-    .map((l, i) => `${i + 1}. ${l}`)
-    .join("\n");
-}
-
-/** 文案里的 {{LOCATIONS}} 换成编号清单 */
-function fillTemplate(text, ai) {
-  return String(text || "").replace(/\{\{\s*LOCATIONS\s*\}\}/g, numberedLocations(ai?.locations));
-}
-
 /* --------------------------- Claude 呼叫 -------------------------- */
 
 /**
@@ -456,6 +438,27 @@ async function callClaude(system, userText) {
   }
   if (!data.text) throw new Error("回覆是空的");
   return data.text;
+}
+
+/**
+ * 产生回覆。有标准话术对得上就原样送出，没有才请 AI 自己写。
+ * @returns {Promise<{text: string, scriptUsed: string|null}>}
+ */
+async function generateReply(ai, customer, msg) {
+  const scripts = parseScripts(ai.scripts);
+  if (scripts.length) {
+    try {
+      const pick = await callClaude(buildPickSystem(scripts), msg);
+      const n = parsePick(pick, scripts.length);
+      if (n) {
+        return { text: fillTemplate(scripts[n - 1].text, ai), scriptUsed: scripts[n - 1].situation };
+      }
+    } catch (e) {
+      // 分流失败就走自己写那条路，不要整个卡死
+    }
+  }
+  const text = await callClaude(buildSystem(ai, customer), msg);
+  return { text, scriptUsed: null };
 }
 
 function buildSystem(ai, customer) {
@@ -941,6 +944,7 @@ export default function App() {
               seedDemo={seedDemo}
               setToast={setToast}
               locations={parseLocations(apps.ai.locations)}
+              locationsText={apps.ai.locations}
             />
           )}
           {page === "automation" && (
@@ -1093,7 +1097,7 @@ function Overview({ customers, onJump, onSeed }) {
 
 function Pipeline({
   customers, stage, setStage, view, setView,
-  addCustomer, updateCustomer, addTimelineNote, bulkApply, seedDemo, setToast, locations,
+  addCustomer, updateCustomer, addTimelineNote, bulkApply, seedDemo, setToast, locations, locationsText,
 }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState({ key: "updatedAt", dir: "desc" });
@@ -1361,6 +1365,7 @@ function Pipeline({
       {open && (
         <Drawer
           locations={locations}
+          locationsText={locationsText}
           customer={open}
           onClose={() => setOpenId(null)}
           onUpdate={updateCustomer}
@@ -1371,6 +1376,7 @@ function Pipeline({
       {showNew && (
         <NewCustomer
           locations={locations}
+          locationsText={locationsText}
           onClose={() => setShowNew(false)}
           onSave={(d) => {
             addCustomer(d);
@@ -1459,7 +1465,7 @@ function BulkBar({ count, onClear, onApply }) {
 
 /* ------------------------------ Drawer ---------------------------- */
 
-function Drawer({ customer: c, onClose, onUpdate, onNote, setToast, locations }) {
+function Drawer({ customer: c, onClose, onUpdate, onNote, setToast, locations, locationsText }) {
   const [note, setNote] = useState("");
   const [tagInput, setTagInput] = useState("");
 
@@ -1502,7 +1508,17 @@ function Drawer({ customer: c, onClose, onUpdate, onNote, setToast, locations })
               </select>
             </Field>
             <Field label="Machine ID">
-              <input value={c.machineId} onChange={(e) => set({ machineId: e.target.value }, "改 Machine ID")} className={inputCls} />
+              <input
+                value={c.machineId}
+                onChange={(e) => {
+                  const machineId = e.target.value;
+                  // 顾客只报编号，地点由清单自动带出；查不到就不动原本的地点
+                  const hit = lookupLocation(locationsText, machineId);
+                  set(hit ? { machineId, locationName: hit } : { machineId }, "改 Machine ID");
+                }}
+                placeholder="顾客报的编号，例如 25312001"
+                className={inputCls}
+              />
             </Field>
             <Field label="Item No">
               <input value={c.itemNo} onChange={(e) => set({ itemNo: e.target.value }, "改 Item no")} className={inputCls} />
@@ -1645,7 +1661,7 @@ function Drawer({ customer: c, onClose, onUpdate, onNote, setToast, locations })
   );
 }
 
-function NewCustomer({ onClose, onSave, locations }) {
+function NewCustomer({ onClose, onSave, locations, locationsText }) {
   const [d, setD] = useState({ name: "", whatsapp: "", machineId: "", itemNo: "", locationName: locations[0] || "" });
   const ok = d.name.trim() || d.whatsapp.trim();
   return (
@@ -1671,7 +1687,16 @@ function NewCustomer({ onClose, onSave, locations }) {
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Machine ID">
-              <input value={d.machineId} onChange={(e) => setD({ ...d, machineId: e.target.value })} placeholder="RFH-142" className={inputCls} />
+              <input
+                value={d.machineId}
+                onChange={(e) => {
+                  const machineId = e.target.value;
+                  const hit = lookupLocation(locationsText, machineId);
+                  setD((prev) => ({ ...prev, machineId, ...(hit ? { locationName: hit } : {}) }));
+                }}
+                placeholder="顾客报的编号，例如 25312001"
+                className={inputCls}
+              />
             </Field>
             <Field label="Item No">
               <input value={d.itemNo} onChange={(e) => setD({ ...d, itemNo: e.target.value })} className={inputCls} />
@@ -1861,7 +1886,7 @@ function TestAi({ ai }) {
         setOut(`【规则先拦下】命中「${guard.rule.label}」（关键字：${guard.matched}），实际运作时不会呼叫 AI，直接转真人。`);
         return;
       }
-      const text = await callClaude(buildSystem(ai, null), msg);
+      const { text } = await generateReply(ai, null, msg);
       setOut(text);
     } catch (e) {
       setErr("AI 没有回应，稍后再试一次。（" + e.message + "）");
@@ -1932,7 +1957,7 @@ function DraftReview({ ai, customers, setAi, logActivity, addTimelineNote, setTo
       return;
     }
     try {
-      const text = await callClaude(buildSystem(ai, cust), msg);
+      const { text } = await generateReply(ai, cust, msg);
       setState({ kind: "draft", text });
       setEdit(text);
     } catch (e) {
@@ -2337,8 +2362,11 @@ function TestBench({ apps, au, setAu, customers, pushRun, logActivity }) {
       draftNote = `套用规则文案，延迟 ${rule.delayMinutes} 分钟送出`;
     } else {
       try {
-        draft = await callClaude(buildSystem(apps.ai, cust), msg);
-        draftNote = "没有关键字命中，改由 AI 产草稿";
+        const r = await generateReply(apps.ai, cust, msg);
+        draft = r.text;
+        draftNote = r.scriptUsed
+          ? `套用标准话术「${r.scriptUsed}」，原文送出`
+          : "没有关键字命中，也没有标准话术对得上，由 AI 产草稿";
       } catch (e) {
         draftNote = "AI 草稿产生失败：" + e.message;
       }
